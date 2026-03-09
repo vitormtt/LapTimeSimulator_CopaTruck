@@ -12,7 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.tracks.circuit import Circuit
+from src.tracks.circuit import CircuitData
 from src.tracks.hdf5 import CircuitHDF5Writer
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -96,16 +96,16 @@ def download_osm_track(track_name: str, bbox: tuple):
     print(f"[{track_name}] Download concluído! {len(x_np)} nós processados. Comprimento: {total_length:.2f}m")
     
     # Cria o objeto Circuit
-    track_width = 12.0
-    circuit = Circuit(
+    track_width = np.full_like(x_np, 12.0)
+    circuit = CircuitData(
         name=track_name,
-        length=total_length,
         centerline_x=x_np,
         centerline_y=y_np,
         left_boundary_x=x_np,
         left_boundary_y=y_np + track_width/2,
         right_boundary_x=x_np,
-        right_boundary_y=y_np - track_width/2
+        right_boundary_y=y_np - track_width/2,
+        track_width=track_width
     )
     
     return circuit
