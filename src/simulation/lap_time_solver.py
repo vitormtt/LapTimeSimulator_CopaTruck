@@ -2,11 +2,10 @@
 Simulador de Lap Time para Caminhão Copa Truck
 Modelo Bicicleta 2-DOF (Modular) + Aceleração/Frenagem + Motor + Aerodinâmica
 
-IMPLEMENTAÇÕES AVANÇADAS:
+IMPLEMENTAÇÕES:
 - Fase 1: Suavização de Trajetória (Savitzky-Golay).
 - Fase 2: Transferência de Carga Longitudinal (Pitch / Squat / Dive).
-- Fase 3: Shift Time Penalty (Atraso transiente de troca de marcha).
-- Fase 4: Exportação padronizada MoTec/PiToolbox.
+- Fase 3: Exportação padronizada MoTec/PiToolbox.
 """
 import numpy as np
 import pandas as pd
@@ -134,33 +133,16 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     highest_gear_ratio = truck.transmission.get_total_ratio(num_gears)
     absolute_v_rpm_limit = (truck.engine.redline_rpm * 2 * np.pi * truck.brakes.wheel_radius) / (60 * highest_gear_ratio)
     
-    # FORWARD PASS
+    # FORWARD PASS - Aceleração Pura Restaurada
     start_speed = 20.0
     v_profile[0] = min(start_speed, v_lat_max_profile[0]) 
-    
-    # Parâmetros de Transiente de Marcha (Shift Penalty)
-    shift_time_s = config.get("shift_time_s", 0.4) # Atraso de 400ms na embreagem da Copa Truck
-    shift_cooldown_dist = 0.0
     
     for i in range(1, n):
         v_prev = v_profile[i-1]
         a_prev = a_long[i-2] if i > 1 else 0.0
         
-        gear_ideal = truck.transmission.select_optimal_gear(v_prev, truck.brakes.wheel_radius)
-        if gear_ideal < 4: gear_ideal = 4
-        
-        # Verifica se pediu para subir marcha
-        if gear_ideal > gear_profile[i-1] and shift_cooldown_dist <= 0:
-            shift_cooldown_dist = v_prev * shift_time_s # Transforma o atraso de tempo num atraso espacial
-            
-        is_shifting = False
-        if shift_cooldown_dist > 0:
-            gear_current = gear_profile[i-1] # Mantém marcha anterior engatada no log
-            shift_cooldown_dist -= ds[i]
-            is_shifting = True
-        else:
-            gear_current = gear_ideal
-            
+        gear_current = truck.transmission.select_optimal_gear(v_prev, truck.brakes.wheel_radius)
+        if gear_current < 4: gear_current = 4
         gear_profile[i] = gear_current
         
         ratio_total = truck.transmission.get_total_ratio(gear_current)
@@ -187,11 +169,8 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
         else:
             available_long_grip = 0.0
             
-        if is_shifting:
-            # Durante a troca de marcha a tração é cortada a zero
-            F_traction_actual = 0.0
-        else:
-            F_traction_actual = min(F_traction_engine, available_long_grip)
+        # Retirado o Shift Penalty que estava causando loop estagnado
+        F_traction_actual = min(F_traction_engine, available_long_grip)
             
         a = (F_traction_actual - F_drag) / truck.mass
         
@@ -296,8 +275,8 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
             "Time": time_profile,
             "Fuel_Cons_Accum": consumo_acum, 
             "Tyre_Temp_C": temp_pneu,
-            "Throttle": np.where(a_long > 0, 100.0, 0.0), # Canal Proxy para o Dashboard
-            "Brake_Press": np.where(a_long < -0.5, 100.0, 0.0), # Canal Proxy para o Dashboard
+            "Throttle": np.where(a_long > 0, 100.0, 0.0), 
+            "Brake_Press": np.where(a_long < -0.5, 100.0, 0.0),
             "Radius": radius
         })
         df.to_csv(out_path, index=False)
