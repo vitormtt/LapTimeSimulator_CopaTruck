@@ -1,11 +1,6 @@
 """
 Simulador de Lap Time para Caminhão Copa Truck
-Modelo Bicicleta 2-DOF (Modular) + Aceleração/Frenagem + Motor + Aerodinâmica
-
-IMPLEMENTAÇÕES:
-- Fase 1: Suavização de Trajetória (Savitzky-Golay).
-- Fase 2: Transferência de Carga Longitudinal (Pitch / Squat / Dive).
-- Fase 3: Exportação padronizada MoTec/PiToolbox.
+Modelo 3-DOF (Longitudinal + Lateral + Rolagem)
 """
 import numpy as np
 import pandas as pd
@@ -59,6 +54,10 @@ def build_modular_truck_from_dict(params_dict: dict) -> BicycleVehicle2DOF:
     lf = params_dict.get('lf', 2.1)
     lr = params_dict.get('lr', 2.3)
     
+    # Parâmetros de Rolagem do Copa Truck
+    track_width = params_dict.get('track_width', 2.45) 
+    k_roll = params_dict.get('k_roll', 450000.0) # Truck tem rigidez de rolagem altíssima na barra estabilizadora
+    
     return BicycleVehicle2DOF(
         mass=params_dict.get('m', 5000.0),
         wheelbase=lf + lr,
@@ -68,7 +67,9 @@ def build_modular_truck_from_dict(params_dict: dict) -> BicycleVehicle2DOF:
         engine_sys=engine,
         brake_sys=brakes,
         trans_sys=trans,
-        tire_sys=tires
+        tire_sys=tires,
+        track_width=track_width,
+        k_roll=k_roll
     )
 
 def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None):
@@ -115,6 +116,7 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     gear_profile = np.ones(n, dtype=int)
     rpm_profile = np.zeros(n)
     consumo_acum = np.zeros(n)
+    roll_angle_profile = np.zeros(n) # NOVO CANAL PI TOOLBOX
     
     lf = truck.a
     lr = truck.wheelbase - lf
@@ -133,7 +135,7 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     highest_gear_ratio = truck.transmission.get_total_ratio(num_gears)
     absolute_v_rpm_limit = (truck.engine.redline_rpm * 2 * np.pi * truck.brakes.wheel_radius) / (60 * highest_gear_ratio)
     
-    # FORWARD PASS - Aceleração Pura Restaurada
+    # FORWARD PASS - Aceleração 
     start_speed = 20.0
     v_profile[0] = min(start_speed, v_lat_max_profile[0]) 
     
@@ -169,7 +171,6 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
         else:
             available_long_grip = 0.0
             
-        # Retirado o Shift Penalty que estava causando loop estagnado
         F_traction_actual = min(F_traction_engine, available_long_grip)
             
         a = (F_traction_actual - F_drag) / truck.mass
@@ -221,10 +222,17 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
             v_brake_limit = np.sqrt(v_next**2 + 2 * a_decel_effective * ds[i+1])
             v_profile[i] = min(v_profile[i], v_brake_limit)
             
-    # TIME E CONSUMO PASS
+    # TIME E CONSUMO PASS (AGORA INCLUI CÁLCULO DE ROLL 3-DOF)
     time_profile = np.zeros(n)
     for i in range(n):
         a_lat[i] = v_profile[i]**2 / radius[i]
+        
+        # Calcula a Rolagem (3-DOF) da Cabine baseada no G Lateral instantâneo
+        roll_data = truck.calculate_roll_transfer(a_lat[i])
+        # Aqui podemos multiplicar pelo sinal da curvatura para saber se é curva p/ direita ou esquerda
+        sinal_curva = np.sign(curvature[i]) if curvature[i] != 0 else 1.0
+        roll_angle_profile[i] = roll_data['roll_angle_deg'] * sinal_curva
+        
         if i < n-1:
             a_long[i] = (v_profile[i+1]**2 - v_profile[i]**2) / (2 * ds[i+1] if ds[i+1] > 0 else 1)
             
@@ -260,7 +268,7 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
         "compute_time_s": elapsed
     }
     
-    # Exportação nos padrões de nomes da PiToolbox / MoTec
+    # Exportação nos padrões de nomes da PiToolbox / MoTec (Agora com Roll Angle)
     if save_csv and out_path:
         temp_pneu = np.ones(n) * 65.0 
         result["temp_pneu"] = temp_pneu
@@ -272,6 +280,7 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
             "G_Lat": a_lat / g, 
             "Gear": gear_profile,
             "Engine_RPM": rpm_profile, 
+            "Roll_Angle_deg": roll_angle_profile, 
             "Time": time_profile,
             "Fuel_Cons_Accum": consumo_acum, 
             "Tyre_Temp_C": temp_pneu,

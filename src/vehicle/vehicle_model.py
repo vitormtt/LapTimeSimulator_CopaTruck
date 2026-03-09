@@ -1,85 +1,84 @@
-"""
-Módulo do Veículo (Bicycle 2-DOF) integrando Powertrain, Freios e Pneus modulares.
-"""
 import numpy as np
 
-class BicycleVehicle2DOF:
+class VehicleModel:
+    pass
+
+class BicycleVehicle2DOF(VehicleModel):
     """
-    Modelo dinâmico Bicycle 2-DOF (Yaw e Lateral).
-    Utiliza arquitetura modular (engine, brakes, transmission, tires).
+    Modelo de Bicicleta (2-DOF expandido para 3-DOF de Rolagem).
+    Agora inclui transferência de carga lateral explícita com Roll Gradient.
     """
-    
-    def __init__(self, mass: float, wheelbase: float, a: float, cg_height: float, izz: float, 
-                 engine_sys, brake_sys, trans_sys, tire_sys):
-        # Parâmetros de Inércia e Geometria
+    def __init__(self, mass, wheelbase, a, cg_height, izz, engine_sys, brake_sys, trans_sys, tire_sys, track_width=2.5, k_roll=150000.0, roll_center_h=0.4):
         self.mass = mass
         self.wheelbase = wheelbase
-        self.a = a                  # Distância CG até eixo dianteiro
-        self.b = wheelbase - a      # Distância CG até eixo traseiro
+        self.a = a            # Distância CG ao eixo Dianteiro
+        self.b = wheelbase - a # Distância CG ao eixo Traseiro
         self.cg_height = cg_height
-        self.izz = izz              # Inércia polar Z
+        self.izz = izz
+        self.track_width = track_width
         
-        # Módulos Dinâmicos
+        # Parâmetros do 3º DOF (Rolagem - Roll)
+        self.k_roll = k_roll           # Rigidez torcional global (Nm/rad)
+        self.roll_center_h = roll_center_h # Altura do Centro de Rolagem (m)
+        self.h_roll = self.cg_height - self.roll_center_h # Braço de alavanca de rolagem
+        
+        # Subsistemas Modulares
         self.engine = engine_sys
         self.brakes = brake_sys
         self.transmission = trans_sys
         self.tires = tire_sys
         
-        # Estados do veículo
-        self.vx = 0.1 # m/s (evitar divisões por zero)
+        # Estados
+        self.vx = 0.0
         self.vy = 0.0
         self.yaw_rate = 0.0
-        
-    def _calculate_normal_loads(self, ax: float) -> tuple:
-        """Calcula transferência de carga longitudinal"""
-        weight = self.mass * 9.81
-        delta_f = (self.mass * ax * self.cg_height) / self.wheelbase
-        
-        load_front = (weight * self.b / self.wheelbase) - delta_f
-        load_rear = (weight * self.a / self.wheelbase) + delta_f
-        return max(load_front, 0.0), max(load_rear, 0.0)
+        self.roll_angle = 0.0 # Phi (rad)
 
-    def calculate_derivatives(self, throttle: float, brake_pedal: float, steering_angle: float, current_rpm: float):
+    def calculate_derivatives(self, throttle, brake_pedal, steering_angle, current_rpm):
         """
-        Calcula as derivadas de estado (ax, ay, yaw_accel) com base nos inputs do piloto.
+        Calcula as forças de tração do trem de força.
+        No modelo QSS espacial, as derivadas laterais são forçadas pelo raio,
+        então aqui retornamos a capacidade limite motriz.
         """
-        # 1. Transferência de carga estática/dinâmica (assumindo ax do t-1 ou zero para simplificar)
-        Fz_f, Fz_r = self._calculate_normal_loads(ax=0.0) 
+        torque_motor = self.engine.get_torque(current_rpm) * throttle
         
-        # 2. Powertrain Longitudinal
-        engine_torque = self.engine.get_max_torque(current_rpm) * throttle
-        gear = self.transmission.select_optimal_gear(self.vx, wheel_radius_m=0.5)
-        gear_ratio = self.transmission.get_total_ratio(gear)
+        ratio = self.transmission.get_total_ratio(
+            self.transmission.select_optimal_gear(self.vx, self.brakes.wheel_radius)
+        )
+        torque_roda = torque_motor * ratio * self.transmission.efficiency
         
-        wheel_torque_drive = self.engine.get_wheel_torque(engine_torque, gear_ratio)
-        fx_drive = wheel_torque_drive / 0.5 # Assumindo raio da roda 0.5m no momento
-        
-        # 3. Freios Longitudinal
-        brake_forces = self.brakes.get_brake_force(brake_pedal, self.vx)
-        fx_brake = -brake_forces['total'] # Força contrária
-        
-        # Força longitudinal total
-        Fx_total = fx_drive + fx_brake
-        ax = Fx_total / self.mass
-        
-        # 4. Dinâmica Lateral (Bicycle Model)
-        # Slip angles
-        alpha_f = steering_angle - np.arctan2((self.vy + self.a * self.yaw_rate), self.vx)
-        alpha_r = -np.arctan2((self.vy - self.b * self.yaw_rate), self.vx)
-        
-        # Forças laterais usando os pneus modulares
-        Fy_f = self.tires.get_lateral_force(alpha_f, Fz_f)
-        Fy_r = self.tires.get_lateral_force(alpha_r, Fz_r)
-        
-        # 5. Acelerações (Derivadas)
-        ay = (Fy_f * np.cos(steering_angle) + Fy_r) / self.mass - (self.vx * self.yaw_rate)
-        yaw_accel = (self.a * Fy_f * np.cos(steering_angle) - self.b * Fy_r) / self.izz
+        Fx_traction = torque_roda / self.brakes.wheel_radius
+        Fx_brake = self.brakes.get_brake_torque(brake_pedal) / self.brakes.wheel_radius
+        Fx_total = Fx_traction - Fx_brake
         
         return {
-            'ax': ax,
-            'ay': ay,
-            'yaw_accel': yaw_accel,
-            'Fy_f': Fy_f,
-            'Fy_r': Fy_r,
-            'Fx_total': Fx_total
+            'Fx_total': Fx_total,
+            'torque_motor': torque_motor,
+            'rpm': current_rpm
+        }
+        
+    def calculate_roll_transfer(self, a_lat_g):
+        """
+        Equacionamento 3-DOF.
+        Calcula o ângulo de rolagem da cabine/chassi e o Delta de Força Vertical 
+        nos pneus externos em curvas (Lateral Weight Transfer).
+        
+        a_lat_g : Aceleração lateral em m/s²
+        """
+        # Força Centrífuga atuando no CG
+        F_centrifuga = self.mass * a_lat_g
+        
+        # Momento de Rolagem (Roll Moment) no eixo geométrico de rolagem
+        M_roll = F_centrifuga * self.h_roll
+        
+        # Ângulo de Rolagem Estacionário (Phi)
+        self.roll_angle = M_roll / self.k_roll
+        
+        # Transferência de Carga Total do lado de Dentro para o lado de Fora (Delta Fz_lat)
+        # Delta_Fz = (F_centrifuga * cg_height) / track_width
+        delta_fz_lat = (F_centrifuga * self.cg_height) / self.track_width
+        
+        return {
+            'roll_angle_deg': np.degrees(self.roll_angle),
+            'delta_fz_lat': delta_fz_lat
         }
