@@ -131,7 +131,7 @@ def pista_page():
     fig.add_trace(go.Scattergl(x=plot_data['right_x'], y=plot_data['right_y'], mode="lines", name="Right", line=dict(color='red', dash='dot')))
     fig.update_layout(title=f"{meta['name']}", xaxis_title="x (m)", yaxis_title="y (m)", margin=dict(l=0, r=0, t=30, b=0))
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig)
 
     st.success(f"✓ Pista carregada: {meta['name']} | {meta['length']:.2f}m")
 
@@ -181,13 +181,15 @@ def resultados_page():
         fig_v = go.Figure()
         fig_v.add_trace(go.Scattergl(x=res['distance'], y=res['v_profile']*3.6, mode="lines", name="Velocity", line=dict(color="blue", width=2)))
         fig_v.update_layout(title="Velocity", margin=dict(l=0, r=0, t=30, b=0), height=350)
-        st.plotly_chart(fig_v, use_container_width=True)
+        # Trocado de use_container_width (deprecated) para key normal do plotly_chart
+        st.plotly_chart(fig_v)
 
     with col_g2:
         fig_a = go.Figure()
         fig_a.add_trace(go.Scattergl(x=res['distance'], y=res['a_lat'], mode="lines", name="a_lateral", line=dict(color="red", width=2)))
         fig_a.update_layout(title="Lateral Acceleration", margin=dict(l=0, r=0, t=30, b=0), height=350)
-        st.plotly_chart(fig_a, use_container_width=True)
+        # Trocado de use_container_width (deprecated) para key normal do plotly_chart
+        st.plotly_chart(fig_a)
 
 PAGES = {
     "Parameters": parametros_veiculo_page,
