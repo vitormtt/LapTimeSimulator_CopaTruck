@@ -1,222 +1,295 @@
-# src/simulation.py
 """
 Simulador de Lap Time para Caminhão Copa Truck
-Modelo Bicicleta 2DOF + Aceleração/Frenagem + Motor + Aerodinâmica + Limitadores
+Modelo 3-DOF (Longitudinal + Lateral + Rolagem) com Pneu Térmico
 """
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
 import logging
+import time
+import sys
+from pathlib import Path
+from scipy.signal import savgol_filter
+
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from src.vehicle.engine import ICEEngine
+from src.vehicle.brakes import PneumaticBrake
+from src.vehicle.transmission import Transmission
+from src.vehicle.tires import ThermalPacejkaTire
+from src.vehicle.vehicle_model import BicycleVehicle2DOF
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@dataclass
-class VehicleParams:
-    """Parâmetros do veículo"""
-    m: float = 5000.0
-    lf: float = 2.1
-    lr: float = 2.3
-    h_cg: float = 1.1
-    Cf: float = 120000.0
-    Cr: float = 120000.0
-    mu: float = 1.1
-    r_wheel: float = 0.65
-    P_max: float = 600000.0
-    T_max: float = 3700.0
-    rpm_max: float = 2800.0
-    rpm_idle: float = 800.0
-    n_gears: int = 12
-    gear_ratios: list = None
-    final_drive: float = 5.33
-    max_decel: float = 7.5
-    Cx: float = 0.85
-    A_front: float = 8.7
-    Cl: float = 0.0
+def build_modular_truck_from_dict(params_dict: dict) -> BicycleVehicle2DOF:
+    engine = ICEEngine({
+        'displacement': 12.0,
+        'max_power_kw': params_dict.get('P_max', 600000) / 1000.0,
+        'max_power_rpm': 2000,
+        'max_torque_nm': params_dict.get('T_max', 3700),
+        'max_torque_rpm': 1300,
+        'rpm_max': params_dict.get('rpm_max', 2800),
+        'rpm_idle': params_dict.get('rpm_idle', 800)
+    })
     
-    def __post_init__(self):
-        if self.gear_ratios is None:
-            self.gear_ratios = [14.0, 10.5, 7.8, 5.9, 4.5, 3.5, 2.7, 2.1, 1.6, 1.25, 1.0, 0.78]
-        self.L = self.lf + self.lr
-        self.Iz = self.m * (self.lf**2 + self.lr**2) / 2
-
-def torque_curve(rpm, params):
-    """Curva de torque do motor (curva real diesel pesado)"""
-    rpm_torque_max = 1300.0
-    if rpm < params.rpm_idle:
-        return 0.0
-    elif rpm <= rpm_torque_max:
-        return params.T_max * (rpm - params.rpm_idle) / (rpm_torque_max - params.rpm_idle)
-    elif rpm <= params.rpm_max:
-        # Decréscimo suave após pico
-        return params.T_max * np.exp(-0.0015 * (rpm - rpm_torque_max)**1.2)
-    else:
-        return 0.0
-
-def select_gear_optimal(v, rpm_current, params):
-    """
-    Seleciona marcha ótima para maximizar aceleração.
-    Tenta manter RPM em faixa ótima (1200-2200 rpm).
-    """
-    rpm_min_opt = 1200.0
-    rpm_max_opt = 2200.0
+    brakes = PneumaticBrake({
+        'wheel_radius_m': params_dict.get('r_wheel', 0.65),
+        'max_brake_torque_nm': params_dict.get('m', 5000) * 9.81 * params_dict.get('r_wheel', 0.65) * 1.5,
+        'chamber_area_cm2': 800
+    })
     
-    best_gear = 1
-    best_rpm = 0
+    trans = Transmission({
+        'gear_ratios': params_dict.get('gear_ratios', [14.0, 10.5, 7.8, 5.9, 4.5, 3.5, 2.7, 2.1, 1.6, 1.25, 1.0, 0.78]),
+        'final_drive': params_dict.get('final_drive', 5.33)
+    })
     
-    for gear in range(1, params.n_gears + 1):
-        ratio_total = params.gear_ratios[gear - 1] * params.final_drive
-        rpm = (v / params.r_wheel) * ratio_total * 60 / (2 * np.pi)
-        rpm = np.clip(rpm, 0, params.rpm_max)
-        
-        # Penaliza se RPM sair da faixa ótima
-        if rpm_min_opt <= rpm <= rpm_max_opt:
-            if rpm > best_rpm:
-                best_rpm = rpm
-                best_gear = gear
-        elif rpm > params.rpm_max:
-            # Marcha muito alta, ignora
-            continue
-        else:
-            best_gear = gear
-            best_rpm = rpm
+    tires = ThermalPacejkaTire({
+        'mu_y': params_dict.get('mu', 1.1),
+        'pacejka_b_y': 10.0,
+        'pacejka_c_y': 1.3,
+        'T_initial_C': 65.0,
+        'T_ambient_C': 25.0,
+        'P_cold_bar': 4.5
+    })
     
-    return best_gear
-
-def get_rpm_from_velocity(v, gear, params):
-    """Calcula RPM dada velocidade e marcha"""
-    if gear < 1 or gear > params.n_gears:
-        return 0
-    ratio_total = params.gear_ratios[gear - 1] * params.final_drive
-    rpm = (v / params.r_wheel) * ratio_total * 60 / (2 * np.pi)
-    return np.clip(rpm, 0, params.rpm_max)
+    lf = params_dict.get('lf', 2.1)
+    lr = params_dict.get('lr', 2.3)
+    
+    track_width = params_dict.get('track_width', 2.45) 
+    k_roll = params_dict.get('k_roll', 450000.0)
+    
+    return BicycleVehicle2DOF(
+        mass=params_dict.get('m', 5000.0),
+        wheelbase=lf + lr,
+        a=lf,
+        cg_height=params_dict.get('h_cg', 1.1),
+        izz=params_dict.get('m', 5000.0) * (lf**2 + lr**2) / 2,
+        engine_sys=engine,
+        brake_sys=brakes,
+        trans_sys=trans,
+        tire_sys=tires,
+        track_width=track_width,
+        k_roll=k_roll
+    )
 
 def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None):
-    """
-    Simulação completa com limitadores, consumo, e temp pneus.
-    """
-    params = VehicleParams(**params_dict)
+    start_time = time.time()
+    truck = build_modular_truck_from_dict(params_dict)
+    
     g = 9.81
     rho = 1.225
+    mu_aderencia = config.get("coef_aderencia", truck.tires.mu_y)
     
-    # Condições de simulação
-    mu_aderencia = config.get("coef_aderencia", params.mu)
-    consumo_l_100km = config.get("consumo", 43.0)
-    temp_pneu_ini = config.get("temp_pneu_ini", 65.0)
+    Cx = params_dict.get('Cx', 0.85)
+    A_front = params_dict.get('A_front', 8.7)
+    Cl = params_dict.get('Cl', 0.0)
     
-    # Dados da pista
-    x = circuit.centerline_x
-    y = circuit.centerline_y
-    n = len(x)
+    x_raw = circuit.centerline_x
+    y_raw = circuit.centerline_y
+    n = len(x_raw)
     
+    window_size = min(51, n // 4)
+    if window_size % 2 == 0: window_size += 1
+    
+    if window_size > 3:
+        x = savgol_filter(x_raw, window_length=window_size, polyorder=3)
+        y = savgol_filter(y_raw, window_length=window_size, polyorder=3)
+    else:
+        x, y = x_raw, y_raw
+        
     ds = np.zeros(n)
     ds[1:] = np.sqrt(np.diff(x)**2 + np.diff(y)**2)
     s = np.cumsum(ds)
     
-    # Curvatura
     dx = np.gradient(x)
     dy = np.gradient(y)
     ddx = np.gradient(dx)
     ddy = np.gradient(dy)
+    
     curvature = (dx * ddy - dy * ddx) / (dx**2 + dy**2 + 1e-6)**1.5
     radius = np.where(np.abs(curvature) > 1e-6, 1.0 / np.abs(curvature), 1e6)
     radius = np.clip(radius, 10.0, 1e6)
     
-    # Inicializa arrays
     v_profile = np.zeros(n)
     a_long = np.zeros(n)
     a_lat = np.zeros(n)
     gear_profile = np.ones(n, dtype=int)
     rpm_profile = np.zeros(n)
-    temp_pneu = np.ones(n) * temp_pneu_ini
     consumo_acum = np.zeros(n)
+    roll_angle_profile = np.zeros(n)
+    fz_outer_profile = np.zeros(n) 
+    slip_angle_est = np.zeros(n)   
     
-    logger.info(f"Iniciando simulação com {n} pontos de pista (comprimento: {s[-1]:.1f}m)")
+    # NOVOS CANAIS: Térmico e Pressão
+    temp_pneu_profile = np.zeros(n)
+    pressao_pneu_profile = np.zeros(n)
+    grip_mult_profile = np.zeros(n)
     
-    # FORWARD PASS
-    v_profile[0] = 10.0  # largada lenta
-    gear_profile[0] = 1
+    lf = truck.a
+    lr = truck.wheelbase - lf
+    L = truck.wheelbase
+    h = truck.cg_height
+    
+    v_lat_max_profile = np.zeros(n)
+    for i in range(n):
+        denominador = (truck.mass / radius[i]) - (0.5 * rho * Cl * A_front * mu_aderencia)
+        if denominador > 0:
+            v_lat_max_profile[i] = np.sqrt((mu_aderencia * truck.mass * g) / denominador)
+        else:
+            v_lat_max_profile[i] = 250.0 / 3.6 
+            
+    num_gears = len(truck.transmission.gear_ratios)
+    highest_gear_ratio = truck.transmission.get_total_ratio(num_gears)
+    absolute_v_rpm_limit = (truck.engine.redline_rpm * 2 * np.pi * truck.brakes.wheel_radius) / (60 * highest_gear_ratio)
+    
+    # FORWARD PASS 
+    start_speed = 20.0
+    v_profile[0] = min(start_speed, v_lat_max_profile[0]) 
     
     for i in range(1, n):
         v_prev = v_profile[i-1]
-        gear_current = gear_profile[i-1]
+        a_prev = a_long[i-2] if i > 1 else 0.0
         
-        # Seleciona marcha ótima
-        gear_current = select_gear_optimal(v_prev, 0, params)
+        gear_current = truck.transmission.select_optimal_gear(v_prev, truck.brakes.wheel_radius)
+        if gear_current < 4: gear_current = 4
         gear_profile[i] = gear_current
         
-        # RPM atual
-        rpm = get_rpm_from_velocity(v_prev, gear_current, params)
+        ratio_total = truck.transmission.get_total_ratio(gear_current)
+        rpm = (v_prev / truck.brakes.wheel_radius) * ratio_total * 60 / (2 * np.pi)
+        rpm = np.clip(rpm, truck.engine.idle_rpm, truck.engine.redline_rpm)
         rpm_profile[i-1] = rpm
         
-        # Torque e força de tração
-        T_engine = torque_curve(rpm, params)
-        ratio_total = params.gear_ratios[gear_current - 1] * params.final_drive
-        F_traction = T_engine * ratio_total / params.r_wheel
+        truck.vx = max(v_prev, 0.1)
+        derivadas = truck.calculate_derivatives(throttle=1.0, brake_pedal=0.0, steering_angle=0.0, current_rpm=rpm)
+        F_traction_engine = derivadas['Fx_total'] 
         
-        # Forças resistivas
-        F_drag = 0.5 * rho * params.Cx * params.A_front * v_prev**2
-        F_downforce = 0.5 * rho * params.Cl * params.A_front * v_prev**2
+        F_drag = 0.5 * rho * Cx * A_front * v_prev**2
+        F_downforce = 0.5 * rho * Cl * A_front * v_prev**2
         
-        # Força normal com downforce
-        F_normal = params.m * g + F_downforce
+        Fz_rear_static = truck.mass * g * (lf / L)
+        Delta_Fz = truck.mass * a_prev * (h / L)
+        Fz_rear_dynamic = Fz_rear_static + Delta_Fz + (F_downforce * 0.5)
         
-        # Limita tração por aderência (círculo de força)
-        F_trac_max = mu_aderencia * F_normal
-        F_traction = min(F_traction, F_trac_max)
+        max_rear_grip = mu_aderencia * Fz_rear_dynamic
+        F_lateral = truck.mass * (v_prev**2 / radius[i])
         
-        # Aceleração longitudinal
-        a = (F_traction - F_drag) / params.m
+        if max_rear_grip > F_lateral * 0.5: 
+            available_long_grip = np.sqrt(max_rear_grip**2 - (F_lateral * 0.5)**2)
+        else:
+            available_long_grip = 0.0
+            
+        F_traction_actual = min(F_traction_engine, available_long_grip)
+            
+        a = (F_traction_actual - F_drag) / truck.mass
+        
+        if a > 8.0: a = 8.0
         a_long[i-1] = a
         
-        # Limita por RPM máxima
-        v_rpm_limit = 150.0 / 3.6  # limite de velocidade para evitar overspeed
-        
-        # Velocidade lateral máxima
-        v_lat_max = np.sqrt(mu_aderencia * g * radius[i])
-        
-        # Integra velocidade
         if ds[i] > 0:
             v_possible = np.sqrt(max(0, v_prev**2 + 2 * a * ds[i]))
-            v_profile[i] = min(v_possible, v_lat_max, v_rpm_limit)
+            v_profile[i] = min(v_possible, v_lat_max_profile[i], absolute_v_rpm_limit)
         else:
             v_profile[i] = v_prev
-        
-        # Temperatura dos pneus (simplificada)
-        a_total = np.sqrt(a**2 + (v_prev**2 / max(radius[i], 1))**2)
-        temp_pneu[i] = temp_pneu[i-1] + 0.05 * a_total  # aquecimento por aceleração
-    
-    # BACKWARD PASS (frenagem)
+            
+    # BACKWARD PASS
+    v_profile[-1] = min(v_profile[-1], v_lat_max_profile[-1])
     for i in reversed(range(n-1)):
         v_next = v_profile[i+1]
         
-        # Aceleração lateral no próximo ponto
-        a_lat_next = v_next**2 / max(radius[i+1], 1.0) if v_next > 0 else 0
+        a_lat_next = v_next**2 / radius[i+1]
+        F_lateral_next = truck.mass * a_lat_next
+        F_downforce_next = 0.5 * rho * Cl * A_front * v_next**2
         
-        # Desaceleração máxima (círculo de aderência)
-        a_total_available = mu_aderencia * g
-        a_decel_max = np.sqrt(max(0, a_total_available**2 - a_lat_next**2))
-        a_decel_max = min(a_decel_max, params.max_decel)
+        a_decel_est = mu_aderencia * g 
+        Delta_Fz_brake = truck.mass * a_decel_est * (h / L)
         
-        # Velocidade limite para frear a tempo
+        Fz_front_dynamic = (truck.mass * g * (lr / L)) + Delta_Fz_brake + (F_downforce_next * 0.5)
+        Fz_rear_dynamic  = (truck.mass * g * (lf / L)) - Delta_Fz_brake + (F_downforce_next * 0.5)
+        Fz_rear_dynamic = max(Fz_rear_dynamic, 0.0)
+        
+        max_front_grip = mu_aderencia * Fz_front_dynamic
+        max_rear_grip = mu_aderencia * Fz_rear_dynamic
+        max_total_grip = max_front_grip + max_rear_grip
+        
+        if max_total_grip > F_lateral_next:
+            available_brake_grip = np.sqrt(max_total_grip**2 - F_lateral_next**2)
+        else:
+            available_brake_grip = 0.0
+            
+        a_decel_max_friction = available_brake_grip / truck.mass
+        a_decel_max_system = truck.brakes.get_max_deceleration(v_next, Fz_front_dynamic, Fz_rear_dynamic)
+        a_decel_brakes = min(a_decel_max_friction, a_decel_max_system)
+        
+        a_drag_next = (0.5 * rho * Cx * A_front * v_next**2) / truck.mass
+        a_decel_effective = a_decel_brakes + a_drag_next
+        
+        if a_decel_effective > 8.0: a_decel_effective = 8.0
+        
         if ds[i+1] > 0:
-            v_brake_limit = np.sqrt(v_next**2 + 2 * a_decel_max * ds[i+1])
+            v_brake_limit = np.sqrt(v_next**2 + 2 * a_decel_effective * ds[i+1])
             v_profile[i] = min(v_profile[i], v_brake_limit)
-    
-    # Calcula aceleração lateral e tempo
+            
+    # TIME E CONSUMO PASS (CÁLCULO TÉRMICO DO PNEU E SLIP ANGLE ATUALIZADO)
     time_profile = np.zeros(n)
+    time_acc = 0.0
+    
     for i in range(n):
-        a_lat[i] = v_profile[i]**2 / max(radius[i], 1.0)
+        a_lat[i] = v_profile[i]**2 / radius[i]
+        
+        roll_data = truck.calculate_roll_transfer(a_lat[i])
+        sinal_curva = np.sign(curvature[i]) if curvature[i] != 0 else 1.0
+        roll_angle_profile[i] = roll_data['roll_angle_deg'] * sinal_curva
+        
+        Fz_estatico_roda = (truck.mass * g) / 4.0
+        fz_outer_profile[i] = Fz_estatico_roda + roll_data['delta_fz_lat']
+        
+        Fy_front = (truck.mass * a_lat[i] * lr) / L
+        
+        # Pega parâmetros de Pacejka direto para rigidez
+        if hasattr(truck.tires, 'C_y'):
+            cf_total = truck.tires.B_y * truck.tires.C_y * truck.tires.D_y * Fz_estatico_roda
+        elif hasattr(truck.tires, 'cornering_stiffness'):
+            cf_total = truck.tires.cornering_stiffness
+        else:
+            cf_total = 100000.0
+
+        slip_angle_rad = Fy_front / (cf_total + 1.0)
+        slip_angle_est[i] = np.degrees(slip_angle_rad) * sinal_curva
+        
+        if i < n-1:
+            a_long[i] = (v_profile[i+1]**2 - v_profile[i]**2) / (2 * ds[i+1] if ds[i+1] > 0 else 1)
+            
         if i > 0 and v_profile[i] > 0:
-            dt = ds[i] / v_profile[i] if v_profile[i] > 0 else 0
-            time_profile[i] = time_profile[i-1] + dt
-            # Consumo (simplificado)
-            consumo_acum[i] = consumo_acum[i-1] + (consumo_l_100km / 100.0) * (ds[i] / 1000.0)
-    
+            dt = ds[i] / v_profile[i]
+            time_acc += dt
+            time_profile[i] = time_acc
+            
+            # ATUALIZAÇÃO TÉRMICA DO PNEU (THERMAL TIRE MODEL)
+            truck.tires.update_thermal_state(slip_angle_rad, Fy_front, v_profile[i], dt)
+            temp_pneu_profile[i] = truck.tires.T_core
+            pressao_pneu_profile[i] = truck.tires.current_pressure
+            grip_mult_profile[i] = truck.tires.current_grip_mult
+            
+            F_drag_inst = 0.5 * rho * Cx * A_front * v_profile[i]**2
+            F_traction_req = truck.mass * max(0, a_long[i]) + F_drag_inst
+            
+            potencia_kw = (F_traction_req * v_profile[i]) / 1000
+            if potencia_kw > 0:
+                consumo_seg = truck.engine.get_fuel_consumption(potencia_kw, dt)
+                consumo_acum[i] = consumo_acum[i-1] + consumo_seg
+            else:
+                consumo_acum[i] = consumo_acum[i-1]
+        elif i == 0:
+            time_profile[i] = 0.0
+            temp_pneu_profile[0] = truck.tires.T_core
+            pressao_pneu_profile[0] = truck.tires.current_pressure
+            grip_mult_profile[0] = truck.tires.current_grip_mult
+                
     lap_time = time_profile[-1]
-    
-    logger.info(f"✓ Lap time: {lap_time:.2f}s | V_max: {np.max(v_profile)*3.6:.1f} km/h | V_média: {np.mean(v_profile)*3.6:.1f} km/h")
-    logger.info(f"✓ Consumo total: {consumo_acum[-1]:.2f}L | Temp pneu máx: {np.max(temp_pneu):.1f}°C")
+    elapsed = time.time() - start_time
+    logger.info(f"GGV Solver Concluído em {elapsed:.4f}s. Tempo de volta: {lap_time:.2f}s | T_Pneu final: {temp_pneu_profile[-1]:.1f}C")
     
     result = {
         "lap_time": lap_time,
@@ -227,27 +300,35 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
         "gear": gear_profile,
         "rpm": rpm_profile,
         "radius": radius,
+        "roll_angle_profile": roll_angle_profile,
         "time": time_profile,
-        "temp_pneu": temp_pneu,
-        "consumo": consumo_acum
+        "consumo": consumo_acum,
+        "temp_pneu": temp_pneu_profile,
+        "pressao_pneu": pressao_pneu_profile,
+        "grip_mult": grip_mult_profile,
+        "compute_time_s": elapsed
     }
     
     if save_csv and out_path:
         df = pd.DataFrame({
-            "distance_m": s,
-            "x_m": x,
-            "y_m": y,
-            "v_kmh": v_profile * 3.6,
-            "a_long_ms2": a_long,
-            "a_lat_ms2": a_lat,
-            "gear": gear_profile,
-            "rpm": rpm_profile,
-            "radius_m": radius,
-            "time_s": time_profile,
-            "temp_pneu_c": temp_pneu,
-            "consumo_l": consumo_acum
+            "Distance": s, 
+            "Time": time_profile,
+            "Speed": v_profile * 3.6,
+            "Engine_RPM": rpm_profile, 
+            "Gear": gear_profile,
+            "G_Long": a_long / g, 
+            "G_Lat": a_lat / g, 
+            "Throttle_Pos": np.where(a_long > 0, 100.0, 0.0), 
+            "Brake_Press": np.where(a_long < -0.5, 100.0, 0.0),
+            "Roll_Angle_deg": roll_angle_profile, 
+            "Fz_Outer_Wheel_N": fz_outer_profile,
+            "Front_Slip_Angle_deg": slip_angle_est,
+            "Fuel_Cons_Accum_L": consumo_acum, 
+            "Tyre_Temp_C": temp_pneu_profile,
+            "Tyre_Press_bar": pressao_pneu_profile,
+            "Tyre_Grip_Mult": grip_mult_profile,
+            "Corner_Radius_m": radius
         })
         df.to_csv(out_path, index=False)
-        logger.info(f"[OK] Resultados salvos em: {out_path}")
-    
+        
     return result
