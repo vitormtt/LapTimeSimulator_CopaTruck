@@ -16,17 +16,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
     
-# Imports corretos usando a injeção do sys.path para garantir que não chame o "src." de onde não deve
 from src.tracks.hdf5 import CircuitHDF5Reader
 from src.simulation.lap_time_solver import run_bicycle_model
 from src.vehicle.parameters import copa_truck_2dof_default
 
-# ===== PATHS =====
-# Alterando de caminho chumbado no Windows (C:\User\...) para caminho relativo garantido
 DATA_PATH = str(BASE_DIR / "tracks")
 RESULTS_PATH = str(BASE_DIR / "src" / "results")
 os.makedirs(RESULTS_PATH, exist_ok=True)
-
 
 @st.cache_data
 def load_track_data(caminho_pista: str):
@@ -68,9 +64,11 @@ def init_session_state():
         st.session_state.resultados_prontos = False
     if "resultados" not in st.session_state:
         st.session_state.resultados = None
+    if "csv_path" not in st.session_state:
+        st.session_state.csv_path = None
 
 def parametros_veiculo_page():
-    st.header("Vehicle Parameters - Copa Truck (2DOF)")
+    st.header("Vehicle Parameters - Copa Truck (3-DOF)")
     vp = st.session_state.vehicle_params
 
     col1, col2, col3 = st.columns(3)
@@ -90,6 +88,9 @@ def parametros_veiculo_page():
             vp.mass_geometry.lf = st.number_input("Dist. CG → front (m)", 1.0, 3.0, float(vp.mass_geometry.lf))
             vp.mass_geometry.lr = wheelbase - vp.mass_geometry.lf
             vp.mass_geometry.wheelbase = wheelbase
+            st.markdown("### 3-DOF Roll Parameters")
+            st.number_input("K_roll (Nm/rad)", value=450000.0, step=50000.0, help="Rigidez torcional da barra estabilizadora e molas combinadas")
+            st.number_input("Track Width (m)", value=2.45, help="Bitola do eixo")
         elif section == "Tire":
             vp.tire.cornering_stiffness_front = st.number_input("Cf front (N/rad)", 60000.0, 250000.0, float(vp.tire.cornering_stiffness_front))
             vp.tire.cornering_stiffness_rear = st.number_input("Cr rear (N/rad)", 60000.0, 250000.0, float(vp.tire.cornering_stiffness_rear))
@@ -149,6 +150,9 @@ def simulacao_page():
             with st.spinner("🔄 Simulating..."):
                 params_dict = st.session_state.vehicle_params.to_solver_dict()
                 params_dict["mu"] = st.session_state.config["coef_aderencia"]
+                # Injeta parâmetros básicos de Roll caso o usuário não tenha mexido
+                params_dict["k_roll"] = 450000.0
+                params_dict["track_width"] = 2.45
 
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 pista_nome = st.session_state.circuit_meta["name"].replace(" ", "_")
@@ -157,39 +161,74 @@ def simulacao_page():
                 resultados = run_bicycle_model(params_dict, st.session_state.circuit, st.session_state.config, save_csv=True, out_path=csv_path)
 
                 st.session_state.resultados = resultados
+                st.session_state.csv_path = csv_path
                 st.session_state.resultados_prontos = True
                 st.success(f"✓ Lap time: **{resultados['lap_time']:.2f}s** (Computed in {resultados.get('compute_time_s', 0):.3f}s)")
 
 def resultados_page():
-    st.header("Results")
+    st.header("Results & Telemetry")
     if not st.session_state.get("resultados_prontos", False):
         st.warning("⚠️ Execute a simulação na aba 'Simulation' primeiro para ver os resultados aqui!")
         return
 
     res = st.session_state.resultados
+    csv_file = st.session_state.csv_path
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1: st.metric("Lap time", f"{res['lap_time']:.2f}s")
+    # Top KPIs
+    col1, col2, col3, col4 = st.columns(4)
+    with col1: st.metric("Lap time", f"{res['lap_time']:.2f} s")
     with col2: st.metric("V. Max", f"{np.max(res['v_profile']) * 3.6:.1f} km/h")
-    with col3: st.metric("a_lat Max", f"{np.max(np.abs(res['a_lat'])):.2f} m/s²")
+    with col3: st.metric("Max Lat G", f"{np.max(np.abs(res['a_lat']))/9.81:.2f} G")
+    with col4: st.metric("Fuel Used", f"{np.max(res['consumo']):.2f} L")
     
     st.markdown("---")
-    st.subheader("📈 Charts")
+    
+    # Download Button para o CSV
+    if csv_file and os.path.exists(csv_file):
+        with open(csv_file, "rb") as f:
+            st.download_button(
+                label="📥 Download Telemetry CSV (PiToolbox / MoTec format)",
+                data=f,
+                file_name=os.path.basename(csv_file),
+                mime="text/csv",
+                type="primary"
+            )
+            
+    st.markdown("---")
+    st.subheader("📈 Telemetry Charts")
 
+    # Primeira Linha de Gráficos (Velocidade e Aceleração Lateral)
     col_g1, col_g2 = st.columns(2)
     with col_g1:
         fig_v = go.Figure()
-        fig_v.add_trace(go.Scattergl(x=res['distance'], y=res['v_profile']*3.6, mode="lines", name="Velocity", line=dict(color="blue", width=2)))
-        fig_v.update_layout(title="Velocity", margin=dict(l=0, r=0, t=30, b=0), height=350)
-        # Trocado de use_container_width (deprecated) para key normal do plotly_chart
+        fig_v.add_trace(go.Scattergl(x=res['distance'], y=res['v_profile']*3.6, mode="lines", name="Speed", line=dict(color="blue", width=2)))
+        fig_v.update_layout(title="Speed (km/h)", margin=dict(l=0, r=0, t=30, b=0), height=300)
         st.plotly_chart(fig_v)
 
     with col_g2:
         fig_a = go.Figure()
-        fig_a.add_trace(go.Scattergl(x=res['distance'], y=res['a_lat'], mode="lines", name="a_lateral", line=dict(color="red", width=2)))
-        fig_a.update_layout(title="Lateral Acceleration", margin=dict(l=0, r=0, t=30, b=0), height=350)
-        # Trocado de use_container_width (deprecated) para key normal do plotly_chart
+        fig_a.add_trace(go.Scattergl(x=res['distance'], y=res['a_lat']/9.81, mode="lines", name="Lat G", line=dict(color="red", width=2)))
+        fig_a.update_layout(title="Lateral Accel (G)", margin=dict(l=0, r=0, t=30, b=0), height=300)
         st.plotly_chart(fig_a)
+        
+    # Segunda Linha de Gráficos (Aceleração Longitudinal e Roll Angle do 3-DOF)
+    col_g3, col_g4 = st.columns(2)
+    with col_g3:
+        fig_long = go.Figure()
+        fig_long.add_trace(go.Scattergl(x=res['distance'], y=res['a_long']/9.81, mode="lines", name="Long G", line=dict(color="orange", width=2)))
+        fig_long.update_layout(title="Longitudinal Accel (G)", margin=dict(l=0, r=0, t=30, b=0), height=300)
+        st.plotly_chart(fig_long)
+        
+    with col_g4:
+        # Puxa o Roll_Angle_deg do CSV/Modelo para provar o 3-DOF funcionando
+        if 'Roll_Angle_deg' in pd.read_csv(csv_file).columns:
+            df_temp = pd.read_csv(csv_file)
+            fig_roll = go.Figure()
+            fig_roll.add_trace(go.Scattergl(x=df_temp['Distance'], y=df_temp['Roll_Angle_deg'], mode="lines", name="Roll Angle", line=dict(color="purple", width=2)))
+            fig_roll.update_layout(title="Cabin Roll Angle (degrees) [3-DOF]", margin=dict(l=0, r=0, t=30, b=0), height=300)
+            st.plotly_chart(fig_roll)
+        else:
+            st.info("Simulação anterior não continha o módulo 3-DOF. Rode a simulação novamente.")
 
 PAGES = {
     "Parameters": parametros_veiculo_page,
