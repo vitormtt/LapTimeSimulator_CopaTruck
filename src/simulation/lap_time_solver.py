@@ -1,10 +1,6 @@
 """
 Simulador de Lap Time para Caminhão Copa Truck
 Modelo Bicicleta 2-DOF (Modular) + Aceleração/Frenagem + Motor + Aerodinâmica
-
-IMPLEMENTAÇÕES AVANÇADAS:
-- Pilar 1: Diagrama GGV Aerodinâmico (Limitadores acoplados Fz + Downforce)
-- Pilar 3: Consumo por Demanda de Potência (Básico BSFC Map ready)
 """
 import numpy as np
 import pandas as pd
@@ -27,7 +23,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def build_modular_truck_from_dict(params_dict: dict) -> BicycleVehicle2DOF:
-    """Constrói o caminhão modular a partir do dicionário."""
     engine = ICEEngine({
         'displacement': 12.0,
         'max_power_kw': params_dict.get('P_max', 600000) / 1000.0,
@@ -68,9 +63,6 @@ def build_modular_truck_from_dict(params_dict: dict) -> BicycleVehicle2DOF:
     )
 
 def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None):
-    """
-    Simulação Quasi-Steady-State baseada na arquitetura modular e GGV Diagram.
-    """
     start_time = time.time()
     truck = build_modular_truck_from_dict(params_dict)
     
@@ -78,12 +70,10 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     rho = 1.225
     mu_aderencia = config.get("coef_aderencia", truck.tires.mu_y)
     
-    # Parâmetros aerodinâmicos reais
     Cx = params_dict.get('Cx', 0.85)
     A_front = params_dict.get('A_front', 8.7)
-    Cl = params_dict.get('Cl', 0.0)  # Negativo = sustentação (Lift), Positivo = Downforce
+    Cl = params_dict.get('Cl', 0.0)
     
-    # Setup de pista
     x = circuit.centerline_x
     y = circuit.centerline_y
     n = len(x)
@@ -106,30 +96,28 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     rpm_profile = np.zeros(n)
     consumo_acum = np.zeros(n)
     
-    # PILAR 1: GGV DIAGRAM (Aerodinâmica Dinâmica)
+    # PILAR 1: GGV DIAGRAM - Aderência Dinâmica Máxima Lateral
     v_lat_max_profile = np.zeros(n)
     for i in range(n):
         denominador = (truck.mass / radius[i]) - (0.5 * rho * Cl * A_front * mu_aderencia)
         if denominador > 0:
             v_lat_max_profile[i] = np.sqrt((mu_aderencia * truck.mass * g) / denominador)
         else:
-            v_lat_max_profile[i] = 200.0 / 3.6 # Se downforce infinito, limita velocidade terminal
-    
-    # FORWARD PASS (Aceleração)
-    # Lógica de largada: Caminhões de corrida costumam largar na faixa de 60km/h a 80km/h (rolling start) 
-    # ou de 4ª/5ª marcha. Aqui vamos iniciar com v0 realista de rolling start (ex: 20 m/s ~ 72 km/h)
-    start_speed = 20.0
-    v_profile[0] = min(start_speed, v_lat_max_profile[0]) 
-    
-    # A velocidade máxima teórica do caminhão usando a última marcha real (ex: índice 12)
+            v_lat_max_profile[i] = 250.0 / 3.6 
+            
+    # Lógica de Marcha e Velocidade Limite Absoluta
     num_gears = len(truck.transmission.gear_ratios)
     highest_gear_ratio = truck.transmission.get_total_ratio(num_gears)
     absolute_v_rpm_limit = (truck.engine.redline_rpm * 2 * np.pi * truck.brakes.wheel_radius) / (60 * highest_gear_ratio)
     
+    # FORWARD PASS (Aceleração e limites físicos de curva)
+    # Larga de uma velocidade crível para corrida (20 m/s ~ 72 km/h)
+    start_speed = 20.0
+    v_profile[0] = min(start_speed, v_lat_max_profile[0]) 
+    
     for i in range(1, n):
         v_prev = v_profile[i-1]
         
-        # Garante que a marcha escolhida num caminhão de corrida não caia para as de força absurda de arrancada (1-3)
         gear_current = truck.transmission.select_optimal_gear(v_prev, truck.brakes.wheel_radius)
         if gear_current < 4:
             gear_current = 4
@@ -140,23 +128,34 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
         rpm = np.clip(rpm, truck.engine.idle_rpm, truck.engine.redline_rpm)
         rpm_profile[i-1] = rpm
         
-        # Powertrain Physics
+        # O Motor está sempre a 100% no Forward Pass tentando achar o limite
         truck.vx = max(v_prev, 0.1)
         derivadas = truck.calculate_derivatives(throttle=1.0, brake_pedal=0.0, steering_angle=0.0, current_rpm=rpm)
-        F_traction = derivadas['Fx_total'] 
         
-        # Aerodinâmica Dinâmica
+        F_traction_engine = derivadas['Fx_total'] 
+        
+        # Aerodinâmica (Arrasto para segurar e Downforce para grudar)
         F_drag = 0.5 * rho * Cx * A_front * v_prev**2
         F_downforce = 0.5 * rho * Cl * A_front * v_prev**2
-        
-        # Elipse de Tração vs Aderência (Círculo de Kamm ajustado para Normal dinámica)
         F_normal_dynamic = (truck.mass * g) + F_downforce
-        max_traction_grip = mu_aderencia * F_normal_dynamic
-        F_traction_actual = min(F_traction, max_traction_grip)
         
+        # O limite da força de tração NÃO é só o motor, é também o atrito do pneu traseiro contra o asfalto.
+        # No forward pass de um RWD puro, ele empurra com tração nas rodas de trás, mas usamos a elipse toda para manter a lógica:
+        max_total_grip = mu_aderencia * F_normal_dynamic
+        F_lateral = truck.mass * (v_prev**2 / radius[i])
+        
+        if max_total_grip > F_lateral:
+            available_long_grip = np.sqrt(max_total_grip**2 - F_lateral**2)
+        else:
+            available_long_grip = 0.0
+            
+        F_traction_actual = min(F_traction_engine, available_long_grip)
+        
+        # Aceleração Longitudinal instantânea
         a = (F_traction_actual - F_drag) / truck.mass
-        # Limita aceleração a um valor fisicamente possível para não explodir
-        if a > 15.0: a = 15.0
+        
+        # Limita aceleração a um valor fisicamente possível (arrancada absurda < 8m/s2 para caminhão)
+        if a > 8.0: a = 8.0
         
         a_long[i-1] = a
         
@@ -166,45 +165,56 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
         else:
             v_profile[i] = v_prev
             
-    # BACKWARD PASS (Frenagem integrando GGV dinâmico)
+    # BACKWARD PASS (Frenagem integrando GGV dinâmico + limites reais)
+    v_profile[-1] = min(v_profile[-1], v_lat_max_profile[-1])
     for i in reversed(range(n-1)):
         v_next = v_profile[i+1]
         
-        a_lat_next = v_next**2 / max(radius[i+1], 1.0) if v_next > 0 else 0
+        F_lateral_next = truck.mass * (v_next**2 / radius[i+1])
         F_downforce_next = 0.5 * rho * Cl * A_front * v_next**2
-        
-        # A aderência total agora se beneficia do downforce na hora de frear
         F_normal_next = (truck.mass * g) + F_downforce_next
-        a_total_available = (mu_aderencia * F_normal_next) / truck.mass
         
-        # Sobra aderência para frear? (Kamm's Circle / Friction Circle)
-        a_decel_max_friction = np.sqrt(max(0, a_total_available**2 - a_lat_next**2))
+        max_total_grip = mu_aderencia * F_normal_next
         
-        # Limitado pelo Brake System físico
+        if max_total_grip > F_lateral_next:
+            available_brake_grip = np.sqrt(max_total_grip**2 - F_lateral_next**2)
+        else:
+            available_brake_grip = 0.0
+            
+        a_decel_max_friction = available_brake_grip / truck.mass
+        
+        # O Freio tem um limite térmico/pneumático próprio (aqui chumbado os eixos em 60/40)
         a_decel_max_system = truck.brakes.get_max_deceleration(v_next, F_normal_next * 0.6, F_normal_next * 0.4)
-        a_decel_max = min(a_decel_max_friction, a_decel_max_system)
         
-        # Drag Ajudando a Frear
+        a_decel_brakes = min(a_decel_max_friction, a_decel_max_system)
+        
+        # Arrasto ajuda o freio a desacelerar livremente
         a_drag_next = (0.5 * rho * Cx * A_front * v_next**2) / truck.mass
-        a_decel_effective = a_decel_max + a_drag_next
+        a_decel_effective = a_decel_brakes + a_drag_next
+        
+        # Trava para desacelerações impossíveis em caminhões (-8 m/s2 máximo)
+        if a_decel_effective > 8.0: a_decel_effective = 8.0
         
         if ds[i+1] > 0:
             v_brake_limit = np.sqrt(v_next**2 + 2 * a_decel_effective * ds[i+1])
             v_profile[i] = min(v_profile[i], v_brake_limit)
             
-    # TIME E CONSUMO PASS (Pilar 3: Consumo por mapa termodinâmico)
+    # TIME E CONSUMO PASS (Atualiza Acelerações reais resultantes e Consumo Termodinâmico)
     time_profile = np.zeros(n)
     for i in range(n):
-        a_lat[i] = v_profile[i]**2 / max(radius[i], 1.0)
+        a_lat[i] = v_profile[i]**2 / radius[i]
+        
+        if i < n-1:
+            a_long[i] = (v_profile[i+1]**2 - v_profile[i]**2) / (2 * ds[i+1] if ds[i+1] > 0 else 1)
+            
         if i > 0 and v_profile[i] > 0:
             dt = ds[i] / v_profile[i]
             time_profile[i] = time_profile[i-1] + dt
             
-            # Re-calcula F_drag para este V exato para achar potencia exigida
             F_drag_inst = 0.5 * rho * Cx * A_front * v_profile[i]**2
-            F_traction_req = truck.mass * a_long[i] + F_drag_inst
+            F_traction_req = truck.mass * max(0, a_long[i]) + F_drag_inst
             
-            potencia_kw = (max(0, F_traction_req) * v_profile[i]) / 1000
+            potencia_kw = (F_traction_req * v_profile[i]) / 1000
             if potencia_kw > 0:
                 consumo_seg = truck.engine.get_fuel_consumption(potencia_kw, dt)
                 consumo_acum[i] = consumo_acum[i-1] + consumo_seg
@@ -213,7 +223,7 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
                 
     lap_time = time_profile[-1]
     elapsed = time.time() - start_time
-    logger.info(f"GGV Solver Concluído em {elapsed:.4f}s. Tempo de volta: {lap_time:.2f}s")
+    logger.info(f"GGV Solver Concluído em {elapsed:.4f}s. Tempo de volta: {lap_time:.2f}s | V_Max: {np.max(v_profile)*3.6:.1f} km/h")
     
     result = {
         "lap_time": lap_time,
@@ -230,7 +240,6 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     }
     
     if save_csv and out_path:
-        # Recupera as temps fake ou adiciona algo para não quebrar a interface que espera temp_pneu
         temp_pneu = np.ones(n) * 65.0 
         result["temp_pneu"] = temp_pneu
         
