@@ -183,22 +183,51 @@ def resultados_page():
     
     t_pneu_fim = res['temp_pneu'][-1] if 'temp_pneu' in res else 65.0
     p_pneu_fim = res['pressao_pneu'][-1] if 'pressao_pneu' in res else 4.5
+    
+    # Calculo dos KPIs antigos que o usuario pediu para voltar
+    tempo_total = res['time'][-1]
+    time_wot = np.sum((a_long_g > 0.05) * np.diff(np.append([0], res['time'])))
+    time_brake = np.sum((a_long_g < -0.1) * np.diff(np.append([0], res['time'])))
+    time_coast = tempo_total - time_wot - time_brake
+    avg_speed = np.mean(v_kmh)
+    peak_brake = np.min(a_long_g)
+    peak_accel = np.max(a_long_g)
 
     st.subheader("🏁 Performance KPIs")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1: 
-        st.metric("Lap Time", f"{res['lap_time']:.2f} s")
-        st.metric("Max Speed", f"{np.max(v_kmh):.1f} km/h")
-    with col2: 
-        st.metric("Peak Cornering G", f"{max_lat_g:.2f} G")
-        st.metric("Peak Cabin Roll", f"{max_roll_angle:.2f} °")
-    with col3: 
-        st.metric("Final Tyre Temp", f"{t_pneu_fim:.1f} °C", help="Temperatura de Carcaça")
-        st.metric("Final Tyre Press", f"{p_pneu_fim:.2f} bar", help="Pressão a quente no fim da volta")
-    with col4: 
-        st.metric("Fuel Used", f"{np.max(res['consumo']):.2f} L")
-        st.metric("Gear Shifts", f"{np.sum(np.abs(np.diff(res['gear'])))}")
     
+    # Linha 1: Tempos e Velocidades
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: 
+        st.metric("Lap Time", f"{res['lap_time']:.2f} s")
+    with c2: 
+        st.metric("Avg Speed", f"{avg_speed:.1f} km/h")
+    with c3: 
+        st.metric("Max Speed", f"{np.max(v_kmh):.1f} km/h")
+    with c4: 
+        st.metric("Time @ WOT", f"{(time_wot/tempo_total)*100:.1f} %", help="Acelerador Fundo")
+        
+    # Linha 2: Acelerações e Frenagens
+    c5, c6, c7, c8 = st.columns(4)
+    with c5:
+        st.metric("Peak Cornering G", f"{max_lat_g:.2f} G")
+    with c6:
+        st.metric("Peak Braking G", f"{peak_brake:.2f} G")
+    with c7:
+        st.metric("Peak Accel G", f"{peak_accel:.2f} G")
+    with c8:
+        st.metric("Time Braking", f"{(time_brake/tempo_total)*100:.1f} %", help="Freio Acionado")
+
+    # Linha 3: Pneus, Roll e Consumo
+    c9, c10, c11, c12 = st.columns(4)
+    with c9:
+        st.metric("Peak Cabin Roll", f"{max_roll_angle:.2f} °")
+    with c10:
+        st.metric("Final Tyre Temp", f"{t_pneu_fim:.1f} °C", help="Temperatura de Carcaça no fim da volta")
+    with c11:
+        st.metric("Final Tyre Press", f"{p_pneu_fim:.2f} bar", help="Pressão a quente no fim da volta")
+    with c12:
+        st.metric("Fuel Used", f"{np.max(res['consumo']):.2f} L")
+        
     st.markdown("---")
     
     if csv_file and os.path.exists(csv_file):
