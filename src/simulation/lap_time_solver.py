@@ -6,13 +6,20 @@ import numpy as np
 import pandas as pd
 import logging
 import time
+import sys
+from pathlib import Path
 
-# Correção dos imports (removendo 'src.' e usando o PYTHONPATH injetado da interface)
-from vehicle.engine import ICEEngine
-from vehicle.brakes import PneumaticBrake
-from vehicle.transmission import Transmission
-from vehicle.tires import PacejkaTire
-from vehicle.vehicle_model import BicycleVehicle2DOF
+# Adiciona o diretório raiz absoluto ao path em tempo de execução para evitar falhas em imports
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+# Agora usamos 'src.' em tudo, garantindo importação absoluta não importa por onde o script seja chamado
+from src.vehicle.engine import ICEEngine
+from src.vehicle.brakes import PneumaticBrake
+from src.vehicle.transmission import Transmission
+from src.vehicle.tires import PacejkaTire
+from src.vehicle.vehicle_model import BicycleVehicle2DOF
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

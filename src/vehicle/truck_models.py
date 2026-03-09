@@ -1,8 +1,8 @@
-from vehicle.engine import ICEEngine, ElectricMotor
-from vehicle.brakes import HydraulicBrake, PneumaticBrake
-from vehicle.transmission import Transmission
-from vehicle.tires import LinearTire, PacejkaTire
-from vehicle.vehicle_model import BicycleVehicle2DOF
+from src.vehicle.engine import ICEEngine, ElectricMotor
+from src.vehicle.brakes import HydraulicBrake, PneumaticBrake
+from src.vehicle.transmission import Transmission
+from src.vehicle.tires import LinearTire, PacejkaTire
+from src.vehicle.vehicle_model import BicycleVehicle2DOF
 
 def build_copa_truck():
     """Factory para instanciar o modelo 2-DOF parametrizado como Copa Truck"""
