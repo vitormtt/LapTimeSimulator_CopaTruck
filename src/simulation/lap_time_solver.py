@@ -1,110 +1,84 @@
-# src/simulation.py
 """
 Simulador de Lap Time para Caminhão Copa Truck
-Modelo Bicicleta 2DOF + Aceleração/Frenagem + Motor + Aerodinâmica + Limitadores
+Modelo Bicicleta 2-DOF (Modular) + Aceleração/Frenagem + Motor + Aerodinâmica
 """
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
 import logging
+
+from src.vehicle.engine import ICEEngine
+from src.vehicle.brakes import PneumaticBrake
+from src.vehicle.transmission import Transmission
+from src.vehicle.tires import PacejkaTire
+from src.vehicle.vehicle_model import BicycleVehicle2DOF
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@dataclass
-class VehicleParams:
-    """Parâmetros do veículo"""
-    m: float = 5000.0
-    lf: float = 2.1
-    lr: float = 2.3
-    h_cg: float = 1.1
-    Cf: float = 120000.0
-    Cr: float = 120000.0
-    mu: float = 1.1
-    r_wheel: float = 0.65
-    P_max: float = 600000.0
-    T_max: float = 3700.0
-    rpm_max: float = 2800.0
-    rpm_idle: float = 800.0
-    n_gears: int = 12
-    gear_ratios: list = None
-    final_drive: float = 5.33
-    max_decel: float = 7.5
-    Cx: float = 0.85
-    A_front: float = 8.7
-    Cl: float = 0.0
-    
-    def __post_init__(self):
-        if self.gear_ratios is None:
-            self.gear_ratios = [14.0, 10.5, 7.8, 5.9, 4.5, 3.5, 2.7, 2.1, 1.6, 1.25, 1.0, 0.78]
-        self.L = self.lf + self.lr
-        self.Iz = self.m * (self.lf**2 + self.lr**2) / 2
-
-def torque_curve(rpm, params):
-    """Curva de torque do motor (curva real diesel pesado)"""
-    rpm_torque_max = 1300.0
-    if rpm < params.rpm_idle:
-        return 0.0
-    elif rpm <= rpm_torque_max:
-        return params.T_max * (rpm - params.rpm_idle) / (rpm_torque_max - params.rpm_idle)
-    elif rpm <= params.rpm_max:
-        # Decréscimo suave após pico
-        return params.T_max * np.exp(-0.0015 * (rpm - rpm_torque_max)**1.2)
-    else:
-        return 0.0
-
-def select_gear_optimal(v, rpm_current, params):
+def build_modular_truck_from_dict(params_dict: dict) -> BicycleVehicle2DOF:
     """
-    Seleciona marcha ótima para maximizar aceleração.
-    Tenta manter RPM em faixa ótima (1200-2200 rpm).
+    Constrói o caminhão modular a partir do dicionário recebido da interface (VehicleParams).
     """
-    rpm_min_opt = 1200.0
-    rpm_max_opt = 2200.0
+    engine = ICEEngine({
+        'displacement': 12.0,
+        'max_power_kw': params_dict.get('P_max', 600000) / 1000.0,
+        'max_power_rpm': 2000,
+        'max_torque_nm': params_dict.get('T_max', 3700),
+        'max_torque_rpm': 1300,
+        'rpm_max': params_dict.get('rpm_max', 2800),
+        'rpm_idle': params_dict.get('rpm_idle', 800)
+    })
     
-    best_gear = 1
-    best_rpm = 0
+    brakes = PneumaticBrake({
+        'wheel_radius_m': params_dict.get('r_wheel', 0.65),
+        'max_brake_torque_nm': params_dict.get('m', 5000) * 9.81 * params_dict.get('r_wheel', 0.65) * 1.5,
+        'chamber_area_cm2': 800
+    })
     
-    for gear in range(1, params.n_gears + 1):
-        ratio_total = params.gear_ratios[gear - 1] * params.final_drive
-        rpm = (v / params.r_wheel) * ratio_total * 60 / (2 * np.pi)
-        rpm = np.clip(rpm, 0, params.rpm_max)
-        
-        # Penaliza se RPM sair da faixa ótima
-        if rpm_min_opt <= rpm <= rpm_max_opt:
-            if rpm > best_rpm:
-                best_rpm = rpm
-                best_gear = gear
-        elif rpm > params.rpm_max:
-            # Marcha muito alta, ignora
-            continue
-        else:
-            best_gear = gear
-            best_rpm = rpm
+    trans = Transmission({
+        'gear_ratios': params_dict.get('gear_ratios', [14.0, 10.5, 7.8, 5.9, 4.5, 3.5, 2.7, 2.1, 1.6, 1.25, 1.0, 0.78]),
+        'final_drive': params_dict.get('final_drive', 5.33)
+    })
     
-    return best_gear
-
-def get_rpm_from_velocity(v, gear, params):
-    """Calcula RPM dada velocidade e marcha"""
-    if gear < 1 or gear > params.n_gears:
-        return 0
-    ratio_total = params.gear_ratios[gear - 1] * params.final_drive
-    rpm = (v / params.r_wheel) * ratio_total * 60 / (2 * np.pi)
-    return np.clip(rpm, 0, params.rpm_max)
+    tires = PacejkaTire({
+        'mu_y': params_dict.get('mu', 1.1),
+        'pacejka_b_y': 10.0,
+        'pacejka_c_y': 1.3
+    })
+    
+    return BicycleVehicle2DOF(
+        mass=params_dict.get('m', 5000.0),
+        wheelbase=params_dict.get('lf', 2.1) + params_dict.get('lr', 2.3),
+        a=params_dict.get('lf', 2.1),
+        cg_height=params_dict.get('h_cg', 1.1),
+        izz=params_dict.get('m', 5000.0) * (params_dict.get('lf', 2.1)**2 + params_dict.get('lr', 2.3)**2) / 2,
+        engine_sys=engine,
+        brake_sys=brakes,
+        trans_sys=trans,
+        tire_sys=tires
+    )
 
 def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None):
     """
-    Simulação completa com limitadores, consumo, e temp pneus.
+    Simulação Quasi-Steady-State baseada na arquitetura modular.
+    Varrerá a pista resolvendo os limites de aderência e integração de aceleração/frenagem.
     """
-    params = VehicleParams(**params_dict)
+    # 1. Instanciar o caminhão modular
+    truck = build_modular_truck_from_dict(params_dict)
+    
+    # 2. Configurações físicas e de simulação
     g = 9.81
     rho = 1.225
-    
-    # Condições de simulação
-    mu_aderencia = config.get("coef_aderencia", params.mu)
+    mu_aderencia = config.get("coef_aderencia", truck.tires.mu_y)
     consumo_l_100km = config.get("consumo", 43.0)
     temp_pneu_ini = config.get("temp_pneu_ini", 65.0)
     
-    # Dados da pista
+    Cx = params_dict.get('Cx', 0.85)
+    A_front = params_dict.get('A_front', 8.7)
+    Cl = params_dict.get('Cl', 0.0)
+    max_decel = params_dict.get('max_decel', 7.5)
+    
+    # 3. Dados da pista
     x = circuit.centerline_x
     y = circuit.centerline_y
     n = len(x)
@@ -122,7 +96,7 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     radius = np.where(np.abs(curvature) > 1e-6, 1.0 / np.abs(curvature), 1e6)
     radius = np.clip(radius, 10.0, 1e6)
     
-    # Inicializa arrays
+    # 4. Inicializa arrays de telemetria
     v_profile = np.zeros(n)
     a_long = np.zeros(n)
     a_lat = np.zeros(n)
@@ -131,92 +105,89 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     temp_pneu = np.ones(n) * temp_pneu_ini
     consumo_acum = np.zeros(n)
     
-    logger.info(f"Iniciando simulação com {n} pontos de pista (comprimento: {s[-1]:.1f}m)")
+    logger.info(f"Iniciando simulação 2-DOF MODULAR com {n} pontos de pista")
     
-    # FORWARD PASS
-    v_profile[0] = 10.0  # largada lenta
+    # FORWARD PASS (Aceleração)
+    v_profile[0] = 10.0  
     gear_profile[0] = 1
     
     for i in range(1, n):
         v_prev = v_profile[i-1]
-        gear_current = gear_profile[i-1]
         
-        # Seleciona marcha ótima
-        gear_current = select_gear_optimal(v_prev, 0, params)
+        # O módulo de transmissão define a marcha baseada na velocidade
+        gear_current = truck.transmission.select_optimal_gear(v_prev, truck.brakes.wheel_radius)
         gear_profile[i] = gear_current
         
-        # RPM atual
-        rpm = get_rpm_from_velocity(v_prev, gear_current, params)
+        # O rpm é recuperado baseado na relação da marcha atual
+        ratio_total = truck.transmission.get_total_ratio(gear_current)
+        rpm = (v_prev / truck.brakes.wheel_radius) * ratio_total * 60 / (2 * np.pi)
+        rpm = np.clip(rpm, truck.engine.idle_rpm, truck.engine.redline_rpm)
         rpm_profile[i-1] = rpm
         
-        # Torque e força de tração
-        T_engine = torque_curve(rpm, params)
-        ratio_total = params.gear_ratios[gear_current - 1] * params.final_drive
-        F_traction = T_engine * ratio_total / params.r_wheel
+        # Chama a planta física Modular (Acelerador 100%, sem esterçamento ou freio por enquanto no forward pass)
+        truck.vx = max(v_prev, 0.1)
+        derivadas = truck.calculate_derivatives(throttle=1.0, brake_pedal=0.0, steering_angle=0.0, current_rpm=rpm)
         
-        # Forças resistivas
-        F_drag = 0.5 * rho * params.Cx * params.A_front * v_prev**2
-        F_downforce = 0.5 * rho * params.Cl * params.A_front * v_prev**2
+        F_traction = derivadas['Fx_total'] 
         
-        # Força normal com downforce
-        F_normal = params.m * g + F_downforce
+        # Forças Aerodinâmicas
+        F_drag = 0.5 * rho * Cx * A_front * v_prev**2
+        F_downforce = 0.5 * rho * Cl * A_front * v_prev**2
+        F_normal = truck.mass * g + F_downforce
         
-        # Limita tração por aderência (círculo de força)
-        F_trac_max = mu_aderencia * F_normal
-        F_traction = min(F_traction, F_trac_max)
+        # Círculo de atrito longitudinal vs lateral limitador
+        v_lat_max = np.sqrt(mu_aderencia * g * radius[i]) # Limitador por aderência lateral na curva (Atrito puro)
         
-        # Aceleração longitudinal
-        a = (F_traction - F_drag) / params.m
+        a_max_tracao = F_traction / truck.mass
+        a_drag = F_drag / truck.mass
+        
+        a = a_max_tracao - a_drag
         a_long[i-1] = a
         
-        # Limita por RPM máxima
-        v_rpm_limit = 150.0 / 3.6  # limite de velocidade para evitar overspeed
+        # Limita RPM speed limit
+        v_rpm_limit = (truck.engine.redline_rpm * 2 * np.pi * truck.brakes.wheel_radius) / (60 * truck.transmission.get_total_ratio(truck.transmission.gear_ratios[-1]))
         
-        # Velocidade lateral máxima
-        v_lat_max = np.sqrt(mu_aderencia * g * radius[i])
-        
-        # Integra velocidade
+        # Integra cinemática
         if ds[i] > 0:
             v_possible = np.sqrt(max(0, v_prev**2 + 2 * a * ds[i]))
             v_profile[i] = min(v_possible, v_lat_max, v_rpm_limit)
         else:
             v_profile[i] = v_prev
-        
-        # Temperatura dos pneus (simplificada)
+            
         a_total = np.sqrt(a**2 + (v_prev**2 / max(radius[i], 1))**2)
-        temp_pneu[i] = temp_pneu[i-1] + 0.05 * a_total  # aquecimento por aceleração
-    
-    # BACKWARD PASS (frenagem)
+        temp_pneu[i] = temp_pneu[i-1] + 0.05 * a_total
+        
+    # BACKWARD PASS (Frenagem)
     for i in reversed(range(n-1)):
         v_next = v_profile[i+1]
         
-        # Aceleração lateral no próximo ponto
         a_lat_next = v_next**2 / max(radius[i+1], 1.0) if v_next > 0 else 0
-        
-        # Desaceleração máxima (círculo de aderência)
         a_total_available = mu_aderencia * g
         a_decel_max = np.sqrt(max(0, a_total_available**2 - a_lat_next**2))
-        a_decel_max = min(a_decel_max, params.max_decel)
+        a_decel_max = min(a_decel_max, max_decel)
         
-        # Velocidade limite para frear a tempo
         if ds[i+1] > 0:
             v_brake_limit = np.sqrt(v_next**2 + 2 * a_decel_max * ds[i+1])
             v_profile[i] = min(v_profile[i], v_brake_limit)
-    
-    # Calcula aceleração lateral e tempo
+            
+    # TIME PASS
     time_profile = np.zeros(n)
     for i in range(n):
         a_lat[i] = v_profile[i]**2 / max(radius[i], 1.0)
         if i > 0 and v_profile[i] > 0:
             dt = ds[i] / v_profile[i] if v_profile[i] > 0 else 0
             time_profile[i] = time_profile[i-1] + dt
-            # Consumo (simplificado)
-            consumo_acum[i] = consumo_acum[i-1] + (consumo_l_100km / 100.0) * (ds[i] / 1000.0)
-    
+            
+            # Chama o módulo de Motor para Consumo Real
+            potencia_kw = (F_traction * v_profile[i]) / 1000
+            if potencia_kw > 0:
+                consumo_seg = truck.engine.get_fuel_consumption(potencia_kw, dt)
+                consumo_acum[i] = consumo_acum[i-1] + consumo_seg
+            else:
+                consumo_acum[i] = consumo_acum[i-1]
+                
     lap_time = time_profile[-1]
-    
-    logger.info(f"✓ Lap time: {lap_time:.2f}s | V_max: {np.max(v_profile)*3.6:.1f} km/h | V_média: {np.mean(v_profile)*3.6:.1f} km/h")
-    logger.info(f"✓ Consumo total: {consumo_acum[-1]:.2f}L | Temp pneu máx: {np.max(temp_pneu):.1f}°C")
+    logger.info(f"✓ Lap time: {lap_time:.2f}s | V_max: {np.max(v_profile)*3.6:.1f} km/h")
     
     result = {
         "lap_time": lap_time,
@@ -234,20 +205,11 @@ def run_bicycle_model(params_dict, circuit, config, save_csv=True, out_path=None
     
     if save_csv and out_path:
         df = pd.DataFrame({
-            "distance_m": s,
-            "x_m": x,
-            "y_m": y,
-            "v_kmh": v_profile * 3.6,
-            "a_long_ms2": a_long,
-            "a_lat_ms2": a_lat,
-            "gear": gear_profile,
-            "rpm": rpm_profile,
-            "radius_m": radius,
-            "time_s": time_profile,
-            "temp_pneu_c": temp_pneu,
-            "consumo_l": consumo_acum
+            "distance_m": s, "x_m": x, "y_m": y, "v_kmh": v_profile * 3.6,
+            "a_long_ms2": a_long, "a_lat_ms2": a_lat, "gear": gear_profile,
+            "rpm": rpm_profile, "radius_m": radius, "time_s": time_profile,
+            "temp_pneu_c": temp_pneu, "consumo_l": consumo_acum
         })
         df.to_csv(out_path, index=False)
-        logger.info(f"[OK] Resultados salvos em: {out_path}")
-    
+        
     return result
