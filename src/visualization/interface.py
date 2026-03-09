@@ -1,42 +1,33 @@
-# ============ CRITICAL: Must execute BEFORE any custom imports ============
-import sys
-from pathlib import Path
-import time
-import logging
-
-# Configuração de Logs
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-t_start_import = time.time()
-
-# Adiciona diretório src e base ao path corretamente
-BASE_DIR = Path(__file__).resolve().parent.parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-# ===========================================================================
-
 import os
 import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
+import sys
+from pathlib import Path
+import time
+import logging
 
-# Imports Customizados sem prefixo "src." graças à injeção no sys.path
-from tracks.hdf5 import CircuitHDF5Reader
-from simulation.lap_time_solver import run_bicycle_model
-from vehicle.parameters import copa_truck_2dof_default
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-t_end_import = time.time()
-logger.info(f"[PERFORMANCE] Inicialização e Imports concluídos em {t_end_import - t_start_import:.4f}s")
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+    
+# Imports corretos usando a injeção do sys.path para garantir que não chame o "src." de onde não deve
+from src.tracks.hdf5 import CircuitHDF5Reader
+from src.simulation.lap_time_solver import run_bicycle_model
+from src.vehicle.parameters import copa_truck_2dof_default
 
 # ===== PATHS =====
-# Resolvidos via Pathlib para não quebrar em PCs diferentes
+# Alterando de caminho chumbado no Windows (C:\User\...) para caminho relativo garantido
 DATA_PATH = str(BASE_DIR / "tracks")
-RESULTS_PATH = str(BASE_DIR / "results")
+RESULTS_PATH = str(BASE_DIR / "src" / "results")
 os.makedirs(RESULTS_PATH, exist_ok=True)
 
-# Utiliza st.cache_data para acelerar o carregamento da pista e não reprocessar Ponto Flutuante atoa
+
 @st.cache_data
 def load_track_data(caminho_pista: str):
     t0 = time.time()
@@ -44,7 +35,6 @@ def load_track_data(caminho_pista: str):
     t1 = time.time()
     logger.info(f"[PERFORMANCE] Pista {meta['name']} carregada da memória HDF5 em {t1 - t0:.4f}s")
     
-    # Preparando dados de renderização estáticos para cache
     x_c = -(circuit.centerline_y - circuit.centerline_y[0])
     y_c = circuit.centerline_x - circuit.centerline_x[0]
     left_x = -(circuit.left_boundary_y - circuit.centerline_y[0])
@@ -78,8 +68,6 @@ def init_session_state():
         st.session_state.resultados_prontos = False
     if "resultados" not in st.session_state:
         st.session_state.resultados = None
-    if "last_csv_path" not in st.session_state:
-        st.session_state.last_csv_path = None
 
 def parametros_veiculo_page():
     st.header("Vehicle Parameters - Copa Truck (2DOF)")
@@ -102,32 +90,42 @@ def parametros_veiculo_page():
             vp.mass_geometry.lf = st.number_input("Dist. CG → front (m)", 1.0, 3.0, float(vp.mass_geometry.lf))
             vp.mass_geometry.lr = wheelbase - vp.mass_geometry.lf
             vp.mass_geometry.wheelbase = wheelbase
+        elif section == "Tire":
+            vp.tire.cornering_stiffness_front = st.number_input("Cf front (N/rad)", 60000.0, 250000.0, float(vp.tire.cornering_stiffness_front))
+            vp.tire.cornering_stiffness_rear = st.number_input("Cr rear (N/rad)", 60000.0, 250000.0, float(vp.tire.cornering_stiffness_rear))
+            vp.tire.friction_coefficient = st.number_input("μ (base)", 0.8, 1.5, float(vp.tire.friction_coefficient))
         elif section == "Engine":
             vp.engine.max_power = st.number_input("Power (kW)", 300.0, 900.0, float(vp.engine.max_power)/1000.0) * 1000.0
             vp.engine.max_torque = st.number_input("Torque (Nm)", 2000.0, 6500.0, float(vp.engine.max_torque))
+        elif section == "Transmission":
+            vp.transmission.num_gears = st.slider("Gears", 6, 16, int(vp.transmission.num_gears))
+            vp.transmission.final_drive_ratio = st.number_input("Final drive", 2.8, 7.5, float(vp.transmission.final_drive_ratio))
+        elif section == "Brake":
+            vp.brake.max_deceleration = st.slider("Max decel (m/s²)", 3.0, 10.0, float(vp.brake.max_deceleration))
+        elif section == "Aerodynamics":
+            vp.aero.drag_coefficient = st.number_input("Cd", 0.45, 1.20, float(vp.aero.drag_coefficient))
+            vp.aero.frontal_area = st.number_input("Frontal area (m²)", 7.0, 10.0, float(vp.aero.frontal_area))
 
 def pista_page():
     st.header("Track")
     if not os.path.isdir(DATA_PATH):
-        st.warning(f"Folder not found: {DATA_PATH}. Resolvido absoluto: {Path(DATA_PATH).resolve()}")
+        st.warning(f"Pasta de pistas não encontrada no caminho absoluto: {DATA_PATH}. Certifique-se de estar rodando na raiz do projeto.")
         return
 
     pistas = [f for f in os.listdir(DATA_PATH) if f.endswith('.hdf5')]
     if not pistas:
-        st.warning('No tracks found in .hdf5 format!')
+        st.warning(f'Nenhuma pista .hdf5 encontrada na pasta {DATA_PATH}!')
         return
 
     pista_selecionada = st.selectbox("Select:", pistas)
     caminho_pista = os.path.join(DATA_PATH, pista_selecionada)
     
-    # Usando dados cacheados para acelerar o rendering em quase 90%
     circuit, meta, plot_data = load_track_data(caminho_pista)
 
     st.session_state.circuit = circuit
     st.session_state.circuit_meta = meta
 
     fig = go.Figure()
-    # O uso de renderização em modo WebGL (go.Scattergl) acelera exponencialmente plotagem de pistas enormes
     fig.add_trace(go.Scattergl(x=plot_data['x_c'], y=plot_data['y_c'], mode="lines", name="Centerline", line=dict(color="blue", width=2)))
     fig.add_trace(go.Scattergl(x=plot_data['left_x'], y=plot_data['left_y'], mode="lines", name="Left", line=dict(color='green', dash='dot')))
     fig.add_trace(go.Scattergl(x=plot_data['right_x'], y=plot_data['right_y'], mode="lines", name="Right", line=dict(color='red', dash='dot')))
@@ -135,15 +133,15 @@ def pista_page():
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.success(f"✓ {meta['name']} | {meta['length']:.2f}m")
+    st.success(f"✓ Pista carregada: {meta['name']} | {meta['length']:.2f}m")
 
 def simulacao_page():
     st.header("Simulation Configuration")
     if st.session_state.circuit is None:
-        st.warning("⚠️ Select a track first!")
+        st.warning("⚠️ Você precisa ir na aba 'Track' e selecionar uma pista primeiro antes de simular!")
         return
 
-    st.info(f"✓ Track: {st.session_state.circuit_meta['name']}")
+    st.info(f"✓ Track Pronta para Simulação: {st.session_state.circuit_meta['name']}")
 
     col_play, col_reset = st.columns(2)
     with col_play:
@@ -160,13 +158,12 @@ def simulacao_page():
 
                 st.session_state.resultados = resultados
                 st.session_state.resultados_prontos = True
-                st.session_state.last_csv_path = csv_path
                 st.success(f"✓ Lap time: **{resultados['lap_time']:.2f}s** (Computed in {resultados.get('compute_time_s', 0):.3f}s)")
 
 def resultados_page():
     st.header("Results")
     if not st.session_state.get("resultados_prontos", False):
-        st.warning("Run a simulation first!")
+        st.warning("⚠️ Execute a simulação na aba 'Simulation' primeiro para ver os resultados aqui!")
         return
 
     res = st.session_state.resultados
@@ -199,7 +196,6 @@ PAGES = {
     "Results": resultados_page
 }
 
-# ===== MAIN =====
 st.set_page_config(page_title="LapTimeSimulator", layout="wide")
 init_session_state()
 
