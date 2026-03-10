@@ -1,0 +1,2 @@
+[console_scripts]
+lap-sim = lap_time_simulator.cli:main
