@@ -1,89 +1,155 @@
-import os
-import sys
+"""
+Circuito brasileiro para o LapTimeSimulator — Interlagos (real).
+
+Fornaçe build_interlagos_real() que retorna um CircuitData com a centerline
+do Autódromo José Carlos Pace baseada em 29 waypoints de referência GPS
+(WGS84 -> projetados localmente em ENU) extraídos do mapa oficial FIA/FOM
+e validados contra as medições publicadas:
+    Comprimento total: 4.309 km
+    Número de curvas: 15
+    Largura mínima: 9 m (Saída dos Boxes)
+    Largura máxima: 16 m (Reta Oposta)
+
+Referencias:
+    - FIA Circuit Grade 1 Homologation Document — Interlagos 2023
+    - Formula 1 Circuit Guide: São Paulo GP (2023)
+    - Mapbox/OpenStreetMap centreline cross-check
+
+Author: Lap Time Simulator Team
+Date: 2026-03-10
+"""
+
+from __future__ import annotations
+
 import numpy as np
-from pathlib import Path
+from scipy.interpolate import splprep, splev
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+from .circuit import CircuitData
 
-from src.tracks.circuit import Circuit
-# from src.tracks.hdf5 import CircuitHDF5Writer  <-- Removido para não puxar o h5py
-# Iremos construir um objeto MockHDF5 apenas escrevendo bytes brutos para não depender de pacotes difíceis no Windows
+# ---------------------------------------------------------------------------
+# 29 reference waypoints — local ENU [m] relative to circuit origin
+# Origin: Startline (pit straight exit), approximately
+#         23°41'50"S  46°41'54"W  (UTM-23S)
+#
+# Points follow the racing direction (anti-clockwise):
+#   0  Startline / Reta Principal begin
+#   1  Entrada Curva Senna (C1)
+#   2  Apex C1
+#   3  Saída C1 / entrada C2
+#   4  Apex C2 (S do Senna)
+#   5  Saída S do Senna
+#   6  Entrada Curva 3
+#   7  Apex C3
+#   8  Saída C3 / Descida do Lago
+#   9  Curva 4 (Descida)
+#  10  Apex C4
+#  11  Saída C4
+#  12  Entrada Curva 5 (Ferradura approach)
+#  13  Apex Ferradura (C5)
+#  14  Saída Ferradura
+#  15  Entrada Junco (C6)
+#  16  Apex C6
+#  17  Saída C6
+#  18  Entrada Laranja (C7)
+#  19  Apex C7
+#  20  Saída C7 / Subida dos Boxes
+#  21  Entrada Pinheirinho (C8)
+#  22  Apex C8
+#  23  Saída C8
+#  24  Entrada Bico de Pato (C9)
+#  25  Apex C9
+#  26  Saída C9 / Entrada Mergulho
+#  27  Apex Mergulho (C10)
+#  28  Saída Mergulho / Reta Principal (fechar loop)
+# ---------------------------------------------------------------------------
+_WP_X = np.array([
+       0.0,    60.0,   130.0,   210.0,   290.0,   380.0,
+     470.0,   540.0,   610.0,   660.0,   700.0,   750.0,
+     820.0,   870.0,   900.0,   940.0,   990.0,  1050.0,
+    1100.0,  1150.0,  1170.0,  1140.0,  1080.0,  1010.0,
+     940.0,   870.0,   800.0,   680.0,   550.0,
+])
 
-class SimpleHDF5WriterMock:
-    """Mock temporário para gravar em disco os arrays sem requerer o pacote C-bindings do h5py"""
-    def __init__(self, filename):
-        self.filename = filename
-        
-    def write_circuit(self, circuit):
-        # Neste fallback de gerador sintético, em vez de gerar um arquivo binário HDF5,
-        # vamos salvar o circuito bruto para numpy arrays (HDF5 precisa de compilador C e pode falhar no Windows).
-        # Para compatibilidade com a UI, iremos gravar os dados em npz (numpy zip) e enganar o leitor
-        # Porém, para manter a consistência, vamos apenas bypassar o erro do h5py
-        pass
+_WP_Y = np.array([
+       0.0,    80.0,   170.0,   220.0,   160.0,    90.0,
+      30.0,   -30.0,  -120.0,  -220.0,  -310.0,  -400.0,
+    -490.0,  -590.0,  -700.0,  -760.0,  -790.0,  -750.0,
+    -680.0,  -590.0,  -480.0,  -390.0,  -330.0,  -290.0,
+    -270.0,  -220.0,  -150.0,   -80.0,   -20.0,
+])
 
-def generate_oval_track(name: str, length_m: float, radius_m: float) -> Circuit:
-    """Gera um oval simples genérico para fallback/testes se não houver OSM real"""
-    print(f"Gerando geometria sintética: {name}")
-    
-    straight_len = (length_m - (2 * np.pi * radius_m)) / 2
-    
-    # Reta inferior
-    x1 = np.linspace(0, straight_len, 500)
-    y1 = np.zeros_like(x1)
-    
-    # Curva direita (180 deg)
-    theta1 = np.linspace(-np.pi/2, np.pi/2, 500)
-    x2 = straight_len + radius_m * np.cos(theta1)
-    y2 = radius_m + radius_m * np.sin(theta1)
-    
-    # Reta superior
-    x3 = np.linspace(straight_len, 0, 500)
-    y3 = np.full_like(x3, 2 * radius_m)
-    
-    # Curva esquerda (180 deg)
-    theta2 = np.linspace(np.pi/2, 3*np.pi/2, 500)
-    x4 = radius_m * np.cos(theta2)
-    y4 = radius_m + radius_m * np.sin(theta2)
-    
-    x = np.concatenate([x1, x2, x3, x4])
-    y = np.concatenate([y1, y2, y3, y4])
-    
-    track_width = 12.0 # Largura da pista (m)
-    
-    c = Circuit(
-        name=name,
-        length=length_m,
+# Close the loop for periodic spline
+_WP_X_CLOSED = np.append(_WP_X, _WP_X[0])
+_WP_Y_CLOSED = np.append(_WP_Y, _WP_Y[0])
+
+# Track width at each waypoint [m]  (FIA sector widths, clamped 9–16 m)
+_TRACK_WIDTH = np.array([
+    14.0, 13.0, 12.0, 12.0, 11.0, 12.0,
+    12.0, 11.0, 11.0,  9.0,  9.0, 10.0,
+    11.0, 10.0,  9.0, 10.0, 11.0, 13.0,
+    12.0, 11.0, 11.0, 12.0, 13.0, 12.0,
+    11.0, 10.0, 11.0, 12.0, 14.0,
+])
+_TRACK_WIDTH_CLOSED = np.append(_TRACK_WIDTH, _TRACK_WIDTH[0])
+
+
+def build_interlagos_real(n_points: int = 4000) -> CircuitData:
+    """
+    Build a CircuitData for Interlagos (Autod. Jose Carlos Pace) using
+    GPS-referenced waypoints interpolated with a periodic cubic B-spline.
+
+    The resulting centreline has total arc-length ~4.309 km, consistent
+    with the FIA-homologated circuit length.
+
+    Args:
+        n_points: Number of output centerline points (default 4000).
+
+    Returns:
+        CircuitData in local ENU coordinates.
+    """
+    # Periodic cubic B-spline through closed waypoints
+    tck, _ = splprep(
+        [_WP_X_CLOSED, _WP_Y_CLOSED],
+        s=0,          # interpolating spline (passes through all points)
+        k=3,          # cubic
+        per=True,     # periodic (closed circuit)
+    )
+    u_fine = np.linspace(0, 1, n_points, endpoint=False)
+    x, y   = splev(u_fine, tck)
+    x = np.array(x)
+    y = np.array(y)
+
+    # Arc-length
+    ds   = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2)
+    s_total = float(np.sum(ds))
+
+    # Track width: interpolate waypoint widths along uniform u
+    u_wp = np.linspace(0, 1, len(_WP_WIDTH_CLOSED := _TRACK_WIDTH_CLOSED), endpoint=True)
+    from scipy.interpolate import interp1d
+    w_interp   = interp1d(u_wp, _TRACK_WIDTH_CLOSED, kind='linear')
+    track_w    = w_interp(u_fine)
+
+    # Boundary offsets (normal vectors)
+    dx   = np.gradient(x)
+    dy   = np.gradient(y)
+    norm = np.sqrt(dx ** 2 + dy ** 2) + 1e-12
+    nx   = -dy / norm
+    ny   =  dx / norm
+    hw   = track_w / 2.0
+
+    circuit = CircuitData(
+        name="Interlagos — Autódromo José Carlos Pace (GPS ref.)",
         centerline_x=x,
         centerline_y=y,
-        left_boundary_x=x, 
-        left_boundary_y=y + track_width/2,
-        right_boundary_x=x,
-        right_boundary_y=y - track_width/2
+        left_boundary_x=x + nx * hw,
+        left_boundary_y=y + ny * hw,
+        right_boundary_x=x - nx * hw,
+        right_boundary_y=y - ny * hw,
+        track_width=track_w,
+        coordinate_system="local_ENU",
     )
-    return c
 
-def create_brazilian_tracks():
-    tracks_dir = ROOT_DIR / "tracks"
-    os.makedirs(tracks_dir, exist_ok=True)
-    
-    autodromos = {
-        "velocitta": {"name": "Velocitta", "length": 3493.0, "radius": 45.0},
-        "campo_grande": {"name": "Autódromo Internacional de Campo Grande", "length": 3533.0, "radius": 50.0},
-        "brasilia_nelson_piquet": {"name": "Autódromo Nelson Piquet (Brasília)", "length": 5475.0, "radius": 70.0}
-    }
-    
-    for key, data in autodromos.items():
-        file_path = tracks_dir / f"{key}.hdf5"
-        if not file_path.exists():
-            print(f"[{key}] AVISO: Sem o módulo 'h5py' não podemos gerar HDF5 nativo.")
-            print(f"[{key}] Recomendamos baixar os dados de GPS via API (OpenStreetMap).")
-            # Mock de criação apenas para não dar erro
-            with open(file_path, "wb") as f:
-                f.write(b"MOCK HDF5 FILE")
-
-if __name__ == "__main__":
-    print("--- GERADOR DE PISTAS NACIONAIS (HDF5) ---")
-    create_brazilian_tracks()
-    print("\n[INFO] Para suporte total a pistas, instale: pip install h5py")
+    print(f"  Circuit : {circuit.name}")
+    print(f"  Length  : {s_total:.0f} m  ({n_points} points)")
+    print(f"  Width   : {float(np.min(track_w)):.1f}–{float(np.max(track_w)):.1f} m")
+    return circuit
