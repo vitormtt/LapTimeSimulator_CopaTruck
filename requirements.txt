@@ -2,9 +2,10 @@ numpy
 pandas
 matplotlib
 plotly
-streamlit
+streamlit>=1.32
 scipy
 scikit-learn
 seaborn
 pyyaml
 h5py
+streamlit-extras
