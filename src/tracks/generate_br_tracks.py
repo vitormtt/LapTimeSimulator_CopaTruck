@@ -63,24 +63,27 @@ from .circuit import CircuitData
 #  28  Saída Mergulho / Reta Principal (fechar loop)
 # ---------------------------------------------------------------------------
 _WP_X = np.array([
-       0.0,    60.0,   130.0,   210.0,   290.0,   380.0,
-     470.0,   540.0,   610.0,   660.0,   700.0,   750.0,
-     820.0,   870.0,   900.0,   940.0,   990.0,  1050.0,
+    0.0,    60.0,   130.0,   210.0,   290.0,   380.0,
+    470.0,   540.0,   610.0,   660.0,   700.0,   750.0,
+    820.0,   870.0,   900.0,   940.0,   990.0,  1050.0,
     1100.0,  1150.0,  1170.0,  1140.0,  1080.0,  1010.0,
-     940.0,   870.0,   800.0,   680.0,   550.0,
+    940.0,   870.0,   800.0,   680.0,   550.0,
 ])
 
 _WP_Y = np.array([
-       0.0,    80.0,   170.0,   220.0,   160.0,    90.0,
-      30.0,   -30.0,  -120.0,  -220.0,  -310.0,  -400.0,
+    0.0,    80.0,   170.0,   220.0,   160.0,    90.0,
+    30.0,   -30.0,  -120.0,  -220.0,  -310.0,  -400.0,
     -490.0,  -590.0,  -700.0,  -760.0,  -790.0,  -750.0,
     -680.0,  -590.0,  -480.0,  -390.0,  -330.0,  -290.0,
     -270.0,  -220.0,  -150.0,   -80.0,   -20.0,
 ])
 
-# Close the loop for periodic spline
-_WP_X_CLOSED = np.append(_WP_X, _WP_X[0])
-_WP_Y_CLOSED = np.append(_WP_Y, _WP_Y[0])
+# Scale factor: raw waypoints produce ~3402 m; FIA-homologated length is 4.309 km
+_SCALE = 4309.0 / 3402.0
+
+# Close the loop for periodic spline (scaled to correct arc-length)
+_WP_X_CLOSED = np.append(_WP_X, _WP_X[0]) * _SCALE
+_WP_Y_CLOSED = np.append(_WP_Y, _WP_Y[0]) * _SCALE
 
 # Track width at each waypoint [m]  (FIA sector widths, clamped 9–16 m)
 _TRACK_WIDTH = np.array([
@@ -115,27 +118,28 @@ def build_interlagos_real(n_points: int = 4000) -> CircuitData:
         per=True,     # periodic (closed circuit)
     )
     u_fine = np.linspace(0, 1, n_points, endpoint=False)
-    x, y   = splev(u_fine, tck)
+    x, y = splev(u_fine, tck)
     x = np.array(x)
     y = np.array(y)
 
     # Arc-length
-    ds   = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2)
+    ds = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2)
     s_total = float(np.sum(ds))
 
     # Track width: interpolate waypoint widths along uniform u
-    u_wp = np.linspace(0, 1, len(_WP_WIDTH_CLOSED := _TRACK_WIDTH_CLOSED), endpoint=True)
+    u_wp = np.linspace(0, 1, len(_WP_WIDTH_CLOSED :=
+                       _TRACK_WIDTH_CLOSED), endpoint=True)
     from scipy.interpolate import interp1d
-    w_interp   = interp1d(u_wp, _TRACK_WIDTH_CLOSED, kind='linear')
-    track_w    = w_interp(u_fine)
+    w_interp = interp1d(u_wp, _TRACK_WIDTH_CLOSED, kind='linear')
+    track_w = w_interp(u_fine)
 
     # Boundary offsets (normal vectors)
-    dx   = np.gradient(x)
-    dy   = np.gradient(y)
+    dx = np.gradient(x)
+    dy = np.gradient(y)
     norm = np.sqrt(dx ** 2 + dy ** 2) + 1e-12
-    nx   = -dy / norm
-    ny   =  dx / norm
-    hw   = track_w / 2.0
+    nx = -dy / norm
+    ny = dx / norm
+    hw = track_w / 2.0
 
     circuit = CircuitData(
         name="Interlagos — Autódromo José Carlos Pace (GPS ref.)",
@@ -151,5 +155,6 @@ def build_interlagos_real(n_points: int = 4000) -> CircuitData:
 
     print(f"  Circuit : {circuit.name}")
     print(f"  Length  : {s_total:.0f} m  ({n_points} points)")
-    print(f"  Width   : {float(np.min(track_w)):.1f}–{float(np.max(track_w)):.1f} m")
+    print(
+        f"  Width   : {float(np.min(track_w)):.1f}–{float(np.max(track_w)):.1f} m")
     return circuit

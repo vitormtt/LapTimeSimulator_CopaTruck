@@ -39,7 +39,8 @@ def get_vehicle_by_id(vehicle_id: str) -> VehicleParams:
     """
     if vehicle_id not in _FLEET_REGISTRY:
         available = list(_FLEET_REGISTRY.keys())
-        raise KeyError(f"Vehicle '{vehicle_id}' not found. Available: {available}")
+        raise KeyError(
+            f"Vehicle '{vehicle_id}' not found. Available: {available}")
     return _FLEET_REGISTRY[vehicle_id]()
 
 
@@ -53,9 +54,15 @@ def list_vehicles() -> Dict[str, str]:
     return {vid: get_vehicle_by_id(vid).name for vid in _FLEET_REGISTRY}
 
 
+def list_vehicle_ids() -> list:
+    """Return a list of all registered vehicle IDs."""
+    return list(_FLEET_REGISTRY.keys())
+
+
 __all__ = [
     "get_vehicle_by_id",
     "list_vehicles",
+    "list_vehicle_ids",
     "porsche_gt3_cup_991_1",
     "porsche_gt3_cup_991_2",
     "porsche_gt3_cup_992_1",

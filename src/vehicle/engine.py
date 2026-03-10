@@ -35,15 +35,17 @@ class ICEEngine(BasePowertrain):
 
     def __init__(self, config: dict):
         super().__init__(config)
-        self.displacement  = config.get('displacement', 0.0)
-        self.max_power_kw  = config['max_power_kw']
-        self.max_power_rpm = config.get('max_power_rpm', config.get('rpm_max', 3000))
+        self.displacement = config.get('displacement', 0.0)
+        self.max_power_kw = config['max_power_kw']
+        self.max_power_rpm = config.get(
+            'max_power_rpm', config.get('rpm_max', 3000))
         self.max_torque_nm = config['max_torque_nm']
         self.max_torque_rpm = config.get(
             'max_torque_rpm', config.get('rpm_max', 1300)
         )
-        self.idle_rpm    = config.get('idle_rpm', config.get('rpm_idle', 800))
-        self.redline_rpm = config.get('redline_rpm', config.get('rpm_max', 3000))
+        self.idle_rpm = config.get('idle_rpm', config.get('rpm_idle', 800))
+        self.redline_rpm = config.get(
+            'redline_rpm', config.get('rpm_max', 3000))
         self._build_torque_curve()
 
     def _build_torque_curve(self) -> None:
@@ -61,6 +63,8 @@ class ICEEngine(BasePowertrain):
         if (
             'torque_curve_rpm' in self.config
             and 'torque_curve_nm' in self.config
+            and len(self.config['torque_curve_rpm']) > 0
+            and len(self.config['torque_curve_nm']) > 0
         ):
             # --- Path 1: external curve from VehicleParams ---
             rpm_raw = np.array(self.config['torque_curve_rpm'], dtype=float)
@@ -68,8 +72,8 @@ class ICEEngine(BasePowertrain):
 
             # Sort by RPM (safety: inputs should already be sorted)
             sort_idx = np.argsort(rpm_raw)
-            rpm_raw  = rpm_raw[sort_idx]
-            trq_raw  = trq_raw[sort_idx]
+            rpm_raw = rpm_raw[sort_idx]
+            trq_raw = trq_raw[sort_idx]
 
             # Deduplicate: keep last occurrence for each unique RPM
             _, unique_idx = np.unique(rpm_raw, return_index=True)
@@ -122,7 +126,7 @@ class ICEEngine(BasePowertrain):
         bsfc = self.config.get('bsfc', 210)   # g/kWh
         fuel_density = 0.85                    # kg/L (diesel)
         fuel_rate_kg = (bsfc * power_kw) / (3600 * 1000)
-        fuel_rate_L  = fuel_rate_kg / fuel_density
+        fuel_rate_L = fuel_rate_kg / fuel_density
         return fuel_rate_L * dt
 
 
@@ -131,12 +135,12 @@ class ElectricMotor(BasePowertrain):
 
     def __init__(self, config: dict):
         super().__init__(config)
-        self.max_torque_nm  = config['max_torque_nm']
-        self.max_power_kw   = config['max_power_kw']
+        self.max_torque_nm = config['max_torque_nm']
+        self.max_power_kw = config['max_power_kw']
         self.base_speed_rpm = config.get('base_speed_rpm', 5000)
-        self.max_speed_rpm  = config.get('max_speed_rpm', 15000)
+        self.max_speed_rpm = config.get('max_speed_rpm', 15000)
         # Expose idle_rpm / redline_rpm for interface compatibility
-        self.idle_rpm    = config.get('idle_rpm', 0)
+        self.idle_rpm = config.get('idle_rpm', 0)
         self.redline_rpm = config.get('redline_rpm', self.max_speed_rpm)
 
     def get_max_torque(self, rpm: float) -> float:

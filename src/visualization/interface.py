@@ -8,29 +8,31 @@ Modes:
 Run from project root:
     streamlit run src/visualization/interface.py
 """
+# isort: skip_file
+import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import logging
+import time
 import os
 import sys
-import time
-import logging
 from pathlib import Path
-from datetime import datetime
-
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-import streamlit as st
-
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.simulation.lap_time_solver import run_bicycle_model
-from src.tracks.generate_br_tracks import build_interlagos_real
+
+from src.simulation.lap_time_solver import run_bicycle_model  # noqa: E402
+from src.tracks.generate_br_tracks import build_interlagos_real  # noqa: E402
+
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 # Optional imports — Copa Truck legacy objects
 try:
@@ -53,13 +55,15 @@ try:
 except ImportError:
     FLEET_AVAILABLE = False
 
-DATA_PATH    = str(BASE_DIR / "tracks")
+DATA_PATH = str(BASE_DIR / "tracks")
 RESULTS_PATH = str(BASE_DIR / "src" / "results")
 os.makedirs(RESULTS_PATH, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
 def fmt_laptime(s: float) -> str:
     return f"{int(s // 60)}:{s % 60:06.3f}"
 
@@ -67,12 +71,12 @@ def fmt_laptime(s: float) -> str:
 @st.cache_data
 def _load_hdf5(path: str):
     circuit, meta = CircuitHDF5Reader(path).read_circuit()
-    x_c     = -(circuit.centerline_y   - circuit.centerline_y[0])
-    y_c     =   circuit.centerline_x   - circuit.centerline_x[0]
-    left_x  = -(circuit.left_boundary_y  - circuit.centerline_y[0])
-    left_y  =   circuit.left_boundary_x  - circuit.centerline_x[0]
+    x_c = -(circuit.centerline_y - circuit.centerline_y[0])
+    y_c = circuit.centerline_x - circuit.centerline_x[0]
+    left_x = -(circuit.left_boundary_y - circuit.centerline_y[0])
+    left_y = circuit.left_boundary_x - circuit.centerline_x[0]
     right_x = -(circuit.right_boundary_y - circuit.centerline_y[0])
-    right_y =   circuit.right_boundary_x - circuit.centerline_x[0]
+    right_y = circuit.right_boundary_x - circuit.centerline_x[0]
     return circuit, meta, dict(x_c=x_c, y_c=y_c,
                                left_x=left_x, left_y=left_y,
                                right_x=right_x, right_y=right_y)
@@ -134,7 +138,8 @@ def parametros_veiculo_page():
     # ---- Copa Truck --------------------------------------------------------
     if mode == "Copa Truck":
         if not TRUCK_AVAILABLE:
-            st.error("`copa_truck_2dof_default` not found. Check src/vehicle/parameters.py.")
+            st.error(
+                "`copa_truck_2dof_default` not found. Check src/vehicle/parameters.py.")
             return
         if st.session_state.vehicle_params is None or not hasattr(
             st.session_state.vehicle_params, 'manufacturer'
@@ -143,9 +148,12 @@ def parametros_veiculo_page():
 
         vp = st.session_state.vehicle_params
         col1, col2, col3 = st.columns(3)
-        with col1: st.metric("Manufacturer", vp.manufacturer)
-        with col2: st.metric("Year", vp.year)
-        with col3: st.metric("Power", f"{vp.engine.max_power/1000:.0f} kW")
+        with col1:
+            st.metric("Manufacturer", vp.manufacturer)
+        with col2:
+            st.metric("Year", vp.year)
+        with col3:
+            st.metric("Power", f"{vp.engine.max_power/1000:.0f} kW")
 
         st.markdown("---")
         if st.radio("Customize?", ["No", "Yes"], horizontal=True) == "Yes":
@@ -209,11 +217,11 @@ def parametros_veiculo_page():
         st.markdown("---")
         st.subheader("Setup configuration")
         col1, col2, col3, col4, col5 = st.columns(5)
-        arb_f   = col1.slider("ARB Front",  1, 7, 4)
-        arb_r   = col2.slider("ARB Rear",   1, 7, 4)
-        wing    = col3.slider("Wing pos.",  1, 9, 5)
-        pressure= col4.number_input("Tyre P (bar)", 1.4, 2.4, 1.8, step=0.05)
-        bias    = col5.slider("Brake bias", -2.0, 0.0, -1.0, step=0.5)
+        arb_f = col1.slider("ARB Front",  1, 7, 4)
+        arb_r = col2.slider("ARB Rear",   1, 7, 4)
+        wing = col3.slider("Wing pos.",  1, 9, 5)
+        pressure = col4.number_input("Tyre P (bar)", 1.4, 2.4, 1.8, step=0.05)
+        bias = col5.slider("Brake bias", -2.0, 0.0, -1.0, step=0.5)
 
         setup = VehicleSetup(
             arb_front=arb_f, arb_rear=arb_r, wing_position=wing,
@@ -226,8 +234,10 @@ def parametros_veiculo_page():
 
         d = setup.to_dict()
         col_i1, col_i2, col_i3, col_i4 = st.columns(4)
-        col_i1.metric("ARB front stiffness", f"{d['arb_front_stiffness_nm_rad']/1000:.0f} kNm/rad")
-        col_i2.metric("ARB rear stiffness",  f"{d['arb_rear_stiffness_nm_rad']/1000:.0f} kNm/rad")
+        col_i1.metric("ARB front stiffness",
+                      f"{d['arb_front_stiffness_nm_rad']/1000:.0f} kNm/rad")
+        col_i2.metric("ARB rear stiffness",
+                      f"{d['arb_rear_stiffness_nm_rad']/1000:.0f} kNm/rad")
         col_i3.metric("ΔCd", f"{d['wing_delta_cd']:+.3f}")
         col_i4.metric("Balance", d['handling_balance'])
 
@@ -260,7 +270,7 @@ def pista_page():
         sel = st.selectbox("Select:", pistas)
         circuit, meta, plot_data = _load_hdf5(os.path.join(DATA_PATH, sel))
 
-    st.session_state.circuit      = circuit
+    st.session_state.circuit = circuit
     st.session_state.circuit_meta = meta
 
     fig = go.Figure()
@@ -276,7 +286,7 @@ def pista_page():
     fig.update_layout(title=meta['name'], xaxis_title="x (m)", yaxis_title="y (m)",
                       margin=dict(l=0, r=0, t=35, b=0), height=450)
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     st.success(f"✓ {meta['name']} | {meta['length']:.0f} m")
 
 
@@ -294,18 +304,19 @@ def simulacao_page():
         return
 
     mode = st.session_state.get("vehicle_mode", "Copa Truck")
-    st.info(f"✓ Track: **{st.session_state.circuit_meta['name']}** | Mode: **{mode}**")
+    st.info(
+        f"✓ Track: **{st.session_state.circuit_meta['name']}** | Mode: **{mode}**")
 
     col_play, col_reset = st.columns(2)
     with col_reset:
-        if st.button("🗑️ Clear results", use_container_width=True):
+        if st.button("🗑️ Clear results", width='stretch'):
             st.session_state.resultados_prontos = False
             st.session_state.resultados = None
             st.session_state.all_results = []
             st.rerun()
 
     with col_play:
-        if st.button("▶ Simulate", use_container_width=True, type="primary"):
+        if st.button("▶ Simulate", width='stretch', type="primary"):
             with st.spinner("🔄 Running GGV solver..."):
                 vp = st.session_state.vehicle_params
 
@@ -332,9 +343,10 @@ def simulacao_page():
                 solver_config = {"gear_min": gear_min}
                 # coef_aderencia intentionally NOT set here — mu comes from TireParams
 
-                timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pista_nome = st.session_state.circuit_meta["name"].replace(" ", "_")[:20]
-                csv_path   = os.path.join(
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pista_nome = st.session_state.circuit_meta["name"].replace(" ", "_")[
+                    :20]
+                csv_path = os.path.join(
                     RESULTS_PATH, f"lap_{pista_nome}_{timestamp}.csv"
                 )
 
@@ -349,15 +361,16 @@ def simulacao_page():
                     )
                     elapsed = time.perf_counter() - t0
 
-                    st.session_state.resultados       = result
-                    st.session_state.csv_path         = csv_path
+                    st.session_state.resultados = result
+                    st.session_state.csv_path = csv_path
                     st.session_state.resultados_prontos = True
 
                     # Store for multi-setup comparison
                     label = (
                         setup.setup_name
                         if setup else
-                        getattr(getattr(vp, 'name', None), '__str__', lambda: mode)()
+                        getattr(getattr(vp, 'name', None),
+                                '__str__', lambda: mode)()
                     )
                     st.session_state.all_results.append({
                         "label":      label,
@@ -390,24 +403,24 @@ def resultados_page():
         st.warning("⚠️ Run a simulation first.")
         return
 
-    res      = st.session_state.resultados
+    res = st.session_state.resultados
     csv_file = st.session_state.csv_path
-    circuit  = st.session_state.circuit
+    circuit = st.session_state.circuit
 
-    g       = 9.81
-    v_kmh   = res['v_profile'] * 3.6
-    alon_g  = res['a_long'] / g
-    alat_g  = res['a_lat']  / g
-    dist    = res['distance']
+    g = 9.81
+    v_kmh = res['v_profile'] * 3.6
+    alon_g = res['a_long'] / g
+    alat_g = res['a_lat'] / g
+    dist = res['distance']
 
     tempo_total = res['time'][-1]
-    dt_arr      = np.diff(np.append([0], res['time']))
-    time_wot    = float(np.sum((alon_g > 0.05)  * dt_arr))
-    time_brake  = float(np.sum((alon_g < -0.1)  * dt_arr))
-    max_lat_g   = float(np.max(np.abs(alat_g)))
-    max_roll    = float(np.max(np.abs(res.get('roll_angle_profile', [0]))))
-    t_pneu_fim  = float(res['temp_pneu'][-1])
-    p_pneu_fim  = float(res['pressao_pneu'][-1])
+    dt_arr = np.diff(np.append([0], res['time']))
+    time_wot = float(np.sum((alon_g > 0.05) * dt_arr))
+    time_brake = float(np.sum((alon_g < -0.1) * dt_arr))
+    max_lat_g = float(np.max(np.abs(alat_g)))
+    max_roll = float(np.max(np.abs(res.get('roll_angle_profile', [0]))))
+    t_pneu_fim = float(res['temp_pneu'][-1])
+    p_pneu_fim = float(res['pressao_pneu'][-1])
 
     # --- KPIs ---
     st.subheader("🏁 Performance KPIs")
@@ -426,7 +439,7 @@ def resultados_page():
     c9, c10, c11, c12 = st.columns(4)
     c9.metric("Peak Roll",     f"{max_roll:.2f} °")
     c10.metric("Tyre Temp end", f"{t_pneu_fim:.1f} °C")
-    c11.metric("Tyre Press end",f"{p_pneu_fim:.2f} bar")
+    c11.metric("Tyre Press end", f"{p_pneu_fim:.2f} bar")
     c12.metric("Fuel Used",     f"{float(np.max(res['consumo'])):.3f} L")
 
     st.markdown("---")
@@ -448,7 +461,7 @@ def resultados_page():
     # Colour-coded speed map on circuit centreline
     x_c = circuit.centerline_x
     y_c = circuit.centerline_y
-    n   = min(len(x_c), len(v_kmh))
+    n = min(len(x_c), len(v_kmh))
     fig_map = go.Figure()
     fig_map.add_trace(go.Scattergl(
         x=x_c[:n], y=y_c[:n], mode='markers',
@@ -468,7 +481,7 @@ def resultados_page():
         height=500, margin=dict(l=0, r=0, t=35, b=0),
     )
     fig_map.update_yaxes(scaleanchor='x', scaleratio=1)
-    st.plotly_chart(fig_map, use_container_width=True)
+    st.plotly_chart(fig_map, width='stretch')
 
     st.markdown("---")
     st.subheader("📈 Dynamics Channels")
@@ -479,8 +492,8 @@ def resultados_page():
         fig_v.add_trace(go.Scattergl(x=dist, y=v_kmh, mode='lines',
                                      name='Speed', line=dict(color='royalblue', width=2)))
         fig_v.update_layout(title='Speed (km/h)', height=280,
-                             margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_v, use_container_width=True)
+                            margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_v, width='stretch')
 
     with col_g2:
         fig_a = go.Figure()
@@ -489,8 +502,8 @@ def resultados_page():
         fig_a.add_trace(go.Scattergl(x=dist, y=alon_g, mode='lines',
                                      name='Long G', line=dict(color='seagreen', width=2)))
         fig_a.update_layout(title='Longitudinal & Lateral G', height=280,
-                             margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_a, use_container_width=True)
+                            margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_a, width='stretch')
 
     col_g3, col_g4 = st.columns(2)
     with col_g3:
@@ -501,8 +514,8 @@ def resultados_page():
         fig_temp.add_hline(y=95.0, line_dash='dash', line_color='green',
                            annotation_text='Optimum')
         fig_temp.update_layout(title='Tyre Temperature (°C)', height=280,
-                                margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_temp, use_container_width=True)
+                               margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_temp, width='stretch')
 
     with col_g4:
         fig_press = go.Figure()
@@ -510,8 +523,8 @@ def resultados_page():
                                          name='Tyre Press',
                                          line=dict(color='teal', width=2)))
         fig_press.update_layout(title='Tyre Pressure (bar)', height=280,
-                                 margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_press, use_container_width=True)
+                                margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_press, width='stretch')
 
     col_g5, col_g6 = st.columns(2)
     with col_g5:
@@ -520,10 +533,10 @@ def resultados_page():
                                        name='RPM', line=dict(color='purple', width=2)))
         fig_rpm.add_trace(go.Scattergl(x=dist, y=res['gear'] * 1000, mode='lines',
                                        name='Gear ×1000', line=dict(color='gray',
-                                                                      width=1, dash='dot')))
+                                                                    width=1, dash='dot')))
         fig_rpm.update_layout(title='Engine RPM + Gear (×1000)', height=280,
-                               margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_rpm, use_container_width=True)
+                              margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_rpm, width='stretch')
 
     with col_g6:
         fig_ggv = go.Figure()
@@ -535,10 +548,10 @@ def resultados_page():
         fig_ggv.update_layout(
             title='GGV Diagram', xaxis_title='Lat G', yaxis_title='Long G',
             height=400, yaxis_range=[-1.5, 1.5], xaxis_range=[-1.5, 1.5],
-            margin=dict(l=0,r=0,t=30,b=0),
+            margin=dict(l=0, r=0, t=30, b=0),
         )
         fig_ggv.update_yaxes(scaleanchor='x', scaleratio=1)
-        st.plotly_chart(fig_ggv, use_container_width=True)
+        st.plotly_chart(fig_ggv, width='stretch')
 
     # --- Roll & Slip ---
     col_g7, col_g8 = st.columns(2)
@@ -549,8 +562,8 @@ def resultados_page():
                 x=dist, y=res['roll_angle_profile'], mode='lines',
                 name='Roll angle', line=dict(color='sienna', width=2)))
             fig_roll.update_layout(title='Cabin Roll Angle (°)', height=280,
-                                   margin=dict(l=0,r=0,t=30,b=0))
-            st.plotly_chart(fig_roll, use_container_width=True)
+                                   margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig_roll, width='stretch')
     with col_g8:
         if 'front_slip_angle_deg' in res or True:
             slip_key = 'front_slip_angle_deg' if 'front_slip_angle_deg' in res else None
@@ -561,8 +574,8 @@ def resultados_page():
                 x=dist, y=slip_data, mode='lines',
                 name='Slip angle', line=dict(color='darkviolet', width=2)))
             fig_slip.update_layout(title='Front Slip Angle (°)', height=280,
-                                   margin=dict(l=0,r=0,t=30,b=0))
-            st.plotly_chart(fig_slip, use_container_width=True)
+                                   margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig_slip, width='stretch')
 
     # --- Setup comparison table ---
     all_res = st.session_state.get('all_results', [])
@@ -580,7 +593,7 @@ def resultados_page():
                 "Fuel (L)":     f"{r['fuel_L']:.3f}",
                 "T_tyre (\u00b0C)":  f"{r['tyre_temp']:.1f}",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch')
 
         # Delta bar chart
         base_t = all_res[0]['lap_time']
@@ -594,9 +607,9 @@ def resultados_page():
         fig_delta.update_layout(
             title=f'Δ Lap Time vs. "{labels[0]}" (s)',
             yaxis_title='Δ lap time (s)', height=350,
-            margin=dict(l=0,r=0,t=40,b=0),
+            margin=dict(l=0, r=0, t=40, b=0),
         )
-        st.plotly_chart(fig_delta, use_container_width=True)
+        st.plotly_chart(fig_delta, width='stretch')
 
 
 # ---------------------------------------------------------------------------
