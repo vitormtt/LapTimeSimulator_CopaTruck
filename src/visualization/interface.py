@@ -162,6 +162,7 @@ def _load_interlagos_real():
 def init_session_state():
     defaults = {
         "vehicle_mode":   "Copa Truck",
+        "confirmed_mode": None,       # persists the mode after "Save"
         "vehicle_id":     "porsche_991_1",
         "vehicle_params": None,
         "solver_dict":    None,
@@ -172,6 +173,7 @@ def init_session_state():
         "resultados":     None,
         "csv_path":       None,
         "all_results":    [],   # list of dicts for setup comparison
+        "params_saved":   False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -197,9 +199,10 @@ def parametros_veiculo_page():
             st.error(
                 "`copa_truck_2dof_default` not found. Check src/vehicle/parameters.py.")
             return
-        if st.session_state.vehicle_params is None or not hasattr(
-            st.session_state.vehicle_params, 'manufacturer'
-        ):
+
+        # Only load defaults if no params saved yet or mode changed
+        if (st.session_state.vehicle_params is None
+                or st.session_state.confirmed_mode != "Copa Truck"):
             st.session_state.vehicle_params = copa_truck_2dof_default()
 
         vp = st.session_state.vehicle_params
@@ -252,7 +255,17 @@ def parametros_veiculo_page():
                 vp.aero.frontal_area = st.number_input(
                     "Frontal area (m²)", 7.0, 10.0,
                     float(vp.aero.frontal_area))
-        st.session_state.vehicle_params = vp
+
+        st.markdown("---")
+        if st.button("💾 Save Configuration", width='stretch', type="primary"):
+            st.session_state.vehicle_params = vp
+            st.session_state.setup = None
+            st.session_state.confirmed_mode = "Copa Truck"
+            st.session_state.params_saved = True
+            st.rerun()
+
+        if st.session_state.params_saved and st.session_state.confirmed_mode == "Copa Truck":
+            st.success("✅ Copa Truck configuration saved — ready to simulate.")
 
     # ---- Porsche GT3 Cup --------------------------------------------------
     else:
@@ -284,9 +297,6 @@ def parametros_veiculo_page():
             tyre_pressure=float(pressure), brake_bias=float(bias),
             setup_name=f"ARB{arb_f}/{arb_r}_W{wing}",
         )
-        params = apply_setup(base, setup)
-        st.session_state.vehicle_params = params
-        st.session_state.setup = setup
 
         d = setup.to_dict()
         col_i1, col_i2, col_i3, col_i4 = st.columns(4)
@@ -296,6 +306,21 @@ def parametros_veiculo_page():
                       f"{d['arb_rear_stiffness_nm_rad']/1000:.0f} kNm/rad")
         col_i3.metric("ΔCd", f"{d['wing_delta_cd']:+.3f}")
         col_i4.metric("Balance", d['handling_balance'])
+
+        st.markdown("---")
+        if st.button("💾 Save Configuration", width='stretch', type="primary"):
+            params = apply_setup(base, setup)
+            st.session_state.vehicle_params = params
+            st.session_state.setup = setup
+            st.session_state.confirmed_mode = "Porsche GT3 Cup"
+            st.session_state.params_saved = True
+            st.rerun()
+
+        if st.session_state.params_saved and st.session_state.confirmed_mode == "Porsche GT3 Cup":
+            st.success(
+                f"✅ **{vid}** + setup **{st.session_state.setup.setup_name}** "
+                f"saved — ready to simulate."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -355,11 +380,13 @@ def simulacao_page():
     if st.session_state.circuit is None:
         st.warning("⚠️ Select a track in the 'Track' tab first.")
         return
-    if st.session_state.vehicle_params is None:
-        st.warning("⚠️ Configure a vehicle in the 'Parameters' tab first.")
+    if st.session_state.vehicle_params is None or not st.session_state.params_saved:
+        st.warning(
+            "⚠️ Configure and **save** a vehicle in the 'Parameters' tab first.")
         return
 
-    mode = st.session_state.get("vehicle_mode", "Copa Truck")
+    mode = st.session_state.get("confirmed_mode") or st.session_state.get(
+        "vehicle_mode", "Copa Truck")
     st.info(
         f"✓ Track: **{st.session_state.circuit_meta['name']}** | Mode: **{mode}**")
 
@@ -413,11 +440,11 @@ def simulacao_page():
                     st.session_state.resultados_prontos = True
 
                     # Store for multi-setup comparison
+                    _setup = st.session_state.get("setup")
                     label = (
-                        setup.setup_name
-                        if setup else
-                        getattr(getattr(vp, 'name', None),
-                                '__str__', lambda: mode)()
+                        _setup.setup_name
+                        if _setup else
+                        getattr(vp, 'name', mode)
                     )
                     st.session_state.all_results.append({
                         "label":      label,
@@ -1024,10 +1051,12 @@ def optimization_page():
         st.warning("⚠️ Select a track in the 'Track' tab first.")
         return
 
-    mode = st.session_state.get("vehicle_mode", "Copa Truck")
+    mode = st.session_state.get("confirmed_mode") or st.session_state.get(
+        "vehicle_mode", "Copa Truck")
     if mode != "Porsche GT3 Cup":
         st.warning(
-            "Setup optimisation is only available in **Porsche GT3 Cup** mode.")
+            "Setup optimisation is only available in **Porsche GT3 Cup** mode. "
+            "Go to **Parameters**, select Porsche GT3 Cup and click **Save Configuration**.")
         return
 
     st.caption(
